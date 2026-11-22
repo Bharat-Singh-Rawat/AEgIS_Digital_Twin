@@ -31,6 +31,13 @@ const GROUP_COL = { C: "#8e9aaf", HV: "#e0b24a", P: "#5ac8a8", T: "#4fb3d9", B: 
 
 const toScene = (x, y, z) => [z, y, x];
 const CRYO_COL = { LHe: "#5ac8fa", LN2: "#7d7aff" };
+// pulsed electrode factor 0..1 (same waveform as twin/pulse.py: linear close over `rise`, optional reopening)
+export const pulseFactor = (p, t) => {
+  if (!Number.isFinite(t)) return t > 0 ? (p.open > 0 ? 0 : 1) : 0;
+  let f = Math.min(Math.max((t - p.t0) / p.rise, 0), 1);
+  if (p.open > 0) f *= 1 - Math.min(Math.max((t - p.open) / p.rise, 0), 1);
+  return f;
+};
 // area of a disc of radius R lying below the horizontal line y = h
 const discBelow = (R, h) => (h <= -R ? 0 : h >= R ? Math.PI * R * R : R * R * Math.acos(-h / R) + h * Math.sqrt(R * R - h * h));
 
@@ -162,18 +169,27 @@ export class EventDisplay {
       const surfMat = new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.6, metalness: 0, roughness: 0.1, transparent: true, opacity: 0.38, side: THREE.DoubleSide, depthWrite: false });
       const surf = new THREE.Group(); surf.userData = { kind: "cryo", ...v }; this.layers.cryo.add(surf);
       const steel = new THREE.MeshStandardMaterial({ color: "#c7c7cc", metalness: 0.9, roughness: 0.3, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false });
-      v.segments.forEach((g, i) => {
-        const last = i === v.segments.length - 1, first = i === 0;
-        const parts = [[liquid, g.ri + w, g.ro - w, g.z0 + (first ? w : 0), g.z1 - (last ? w : 0)],
-          [steel, g.ro - w, g.ro, g.z0, g.z1], [steel, g.ri, g.ri + w, g.z0, g.z1]];
+      const bath = v.segments.filter((g) => !g.yc);
+      v.segments.forEach((g) => {
+        const k = bath.indexOf(g), off = !!g.yc;
+        // bath segments share end caps only at the ends of the chain; an off-axis reservoir is closed at both ends
+        const first = off || k === 0, last = off || k === bath.length - 1, liqRi = g.ri ? g.ri + w : 0;
+        const parts = [[liquid, liqRi, g.ro - w, g.z0 + (first ? w : 0), g.z1 - (last ? w : 0)], [steel, g.ro - w, g.ro, g.z0, g.z1]];
+        if (g.ri) parts.push([steel, g.ri, g.ri + w, g.z0, g.z1]);
         if (v.mli) parts.push([mli, g.ro, g.ro + v.mli, g.z0, g.z1]);
         if (first) parts.push([steel, g.ri, g.ro, g.z0, g.z0 + w]);
         if (last) parts.push([steel, g.ri, g.ro, g.z1 - w, g.z1]);
-        const prev = v.segments[i - 1];
+        const prev = !off && bath[k - 1];
         if (prev && prev.ro !== g.ro) parts.push([steel, Math.min(prev.ro, g.ro) - w, Math.max(prev.ro, g.ro), g.z0 - w / 2, g.z0 + w / 2]);
         for (const [mat, ri, ro, z0, z1] of parts) {
-          const m = new THREE.Mesh(tubeGeom(ri, ro, z0, z1, ...cut, 64), mat);
-          m.userData = { kind: "cryo", ...v }; this.layers.cryo.add(m);
+          const m = new THREE.Mesh(tubeGeom(Math.max(ri, 0.001), ro, z0, z1, ...cut, 64), mat);
+          m.position.y = g.yc || 0; m.userData = { kind: "cryo", ...v }; this.layers.cryo.add(m);
+        }
+        if (off) {       // neck joining the reservoir to the bath below it
+          const b = bath.find((q) => q.z0 <= (g.z0 + g.z1) / 2 && q.z1 >= (g.z0 + g.z1) / 2) || bath[0];
+          const y0 = b.ro - w, y1 = g.yc - g.ro + w, zc = (g.z0 + g.z1) / 2;
+          const neck = new THREE.Mesh(new THREE.CylinderGeometry(22, 22, y1 - y0, 24, 1, true), steel);
+          neck.position.set(zc, (y0 + y1) / 2, 0); neck.userData = { kind: "cryo", ...v }; this.layers.cryo.add(neck);
         }
       });
       const s0 = v.segments[0], zEnd = v.segments[v.segments.length - 1].z1;
@@ -233,9 +249,9 @@ export class EventDisplay {
   cryoLitres(v, h) {
     const w = v.wall; let mm3 = 0;
     for (const g of v.segments) {
-      const z0 = g.z0 + w, z1 = g.z1 - w, ri = g.ri + w, ro = g.ro - w;
-      mm3 += (z1 - z0) * (discBelow(ro, h) - discBelow(ri, h));
-      if (v.cryogen === "LHe") for (const c of this.geo.coils) {
+      const z0 = g.z0 + w, z1 = g.z1 - w, ri = g.ri ? g.ri + w : 0, ro = g.ro - w, y = h - (g.yc || 0);
+      mm3 += (z1 - z0) * (discBelow(ro, y) - (ri ? discBelow(ri, y) : 0));
+      if (v.cryogen === "LHe" && !g.yc) for (const c of this.geo.coils) {
         const a = Math.max(c.z0, z0), b = Math.min(c.z1, z1), r0 = Math.max(c.ri, ri), r1 = Math.min(c.ro, ro);
         if (b > a && r1 > r0) mm3 -= (b - a) * (discBelow(r1, h) - discBelow(r0, h));
       }
@@ -247,20 +263,20 @@ export class EventDisplay {
   setCryoFill(id, f) {
     const c = this.cryo[id]; if (!c) return null;
     f = Math.min(1, Math.max(0, f)); this.cryoFill[id] = f;
-    const v = c.v, w = v.wall, R = Math.max(...v.segments.map((g) => g.ro));
+    const v = c.v, w = v.wall;
     if (f >= 0.999) c.h = Infinity; else if (f <= 0.001) c.h = -Infinity;
-    else { let lo = -R, hi = R; for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; (this.cryoLitres(v, m) < f * c.cap ? (lo = m) : (hi = m)); } c.h = (lo + hi) / 2; }
+    else { let lo = Math.min(...v.segments.map((g) => (g.yc || 0) - g.ro)), hi = Math.max(...v.segments.map((g) => (g.yc || 0) + g.ro)); for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; (this.cryoLitres(v, m) < f * c.cap ? (lo = m) : (hi = m)); } c.h = (lo + hi) / 2; }
     c.litres = f * c.cap; this.placeCryoPlane(c);
     // free surface: the horizontal cut through the annulus at y = h (only the kept half in cutaway)
     c.surf.children.forEach((m) => m.geometry.dispose()); c.surf.clear();
     if (Number.isFinite(c.h)) for (const g of v.segments) {
-      const ri = g.ri + w, ro = g.ro - w, h = c.h; if (Math.abs(h) >= ro) continue;
+      const ri = g.ri ? g.ri + w : 0, ro = g.ro - w, h = c.h - (g.yc || 0); if (Math.abs(h) >= ro) continue;
       const a = Math.sqrt(ro * ro - h * h), b = Math.abs(h) < ri ? Math.sqrt(ri * ri - h * h) : 0;
       let strips = b ? [[-a, -b], [b, a]] : [[-a, a]];
       if (this.opts.cutaway) strips = strips.map(([x0, x1]) => [x0, Math.min(x1, 0)]).filter(([x0, x1]) => x1 > x0);
       for (const [x0, x1] of strips) {
         const geo = new THREE.BufferGeometry();
-        geo.setAttribute("position", new THREE.Float32BufferAttribute([g.z0 + w, h, x0, g.z1 - w, h, x0, g.z1 - w, h, x1, g.z0 + w, h, x1], 3));
+        geo.setAttribute("position", new THREE.Float32BufferAttribute([g.z0 + w, c.h, x0, g.z1 - w, c.h, x0, g.z1 - w, c.h, x1, g.z0 + w, c.h, x1], 3));
         geo.setIndex([0, 1, 2, 0, 2, 3]); geo.computeVertexNormals();
         const m = new THREE.Mesh(geo, c.surfMat); m.userData = c.surf.userData; c.surf.add(m);
       }
@@ -410,13 +426,87 @@ export class EventDisplay {
         if (dt >= 0 && dt < win && this.scMeshes[r[0]]) this.scMeshes[r[0]].userData.flash = Math.max(this.scMeshes[r[0]].userData.flash, 1 - dt / win);
       }
     }
+    if (!(this.story.on && this.storyLocate(this.story.u).i < 3)) this.updatePotential(t >= 1e9 ? Infinity : t);
+    // detector hits / annihilations crossed since the last frame (sound)
+    const live = this.time.playing || this.story.playing;
+    if (live && this.hooks.onHits && this._tPrev != null && t > this._tPrev && t < 1e9 && this.data) {
+      const a = this._tPrev, inEv = (ev) => this.event < 0 || ev === this.event;
+      const hits = (this.data.hits || []).filter((r) => r[4] > a && r[4] <= t && inEv(r[5]));
+      const v = this.data.vertices, anns = [];
+      if (v?.t) for (let i = 0; i < v.t.length; i++) if (v.t[i] > a && v.t[i] <= t && inEv(v.ev[i])) anns.push({ z: v.z[i], t: v.t[i], ev: v.ev[i] });
+      if (hits.length || anns.length) this.hooks.onHits(hits, anns);
+    }
+    this._tPrev = t < 1e9 ? t : null;
     this.hooks.onTime?.(this.time.u, t >= 1e9 ? this.time.sorted[this.time.sorted.length - 1] : t);
   }
   play(on = !this.time.playing) { this.time.playing = on; if (on && this.time.u >= 0.999) this.setU(0); this.hooks.onPlay?.(on); }
 
+  /* ---------------- magnet quench (display scenario) ---------------- */
+  // q: { id, coils: [ids], z0, z1, vessel, boilFill (fraction of the vessel to evaporate), onField(fB) }
+  startQuench(q) {
+    this.stopQuench(true);
+    const c = this.cryo[q.vessel], o = this.geo.ovc;
+    this.quench = { ...q, s: 0, f0: this.cryoFill[q.vessel] ?? 1, fieldLast: 1 };
+    const mk = (n, color, size) => { const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(n * 3), 3));
+      const pts = new THREE.Points(g, new THREE.PointsMaterial({ color, size, map: this.dotTex, transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending }));
+      pts.frustumCulled = false; pts.userData.p = Array.from({ length: n }, () => ({ life: -Math.random() })); this.layers.cryo.add(pts); return pts; };
+    this.quench.bubbles = c ? mk(700, "#dff6ff", 7) : null;
+    this.quench.vent = o ? mk(500, "#ffffff", 26) : null;
+    this.quench.seg = c?.v.segments[0]; this.quench.ventZ = (q.z0 + q.z1) / 2; this.quench.ventY = o ? o.ro + 30 : 720;
+  }
+  stopQuench(silent) {
+    const q = this.quench; if (!q) return;
+    [q.bubbles, q.vent].forEach((p) => { if (p) { this.layers.cryo.remove(p); p.geometry.dispose(); } });
+    this.layers.coils.children.forEach((m) => { if (q.coils.includes(m.userData.id)) { m.material.emissiveIntensity = 0; } });
+    if (this.mapMats?.B) this.mapMats.B.uniforms.uQ.value.set(0, 0, 1);
+    this.quench = null; if (!silent) q.onField?.(1, true);
+  }
+  tickQuench(dt) {
+    const q = this.quench; if (!q) return;
+    q.s += dt; const s = q.s;
+    const fB = Math.exp(-s / 1.1);                                   // current decays into the dump / normal zone
+    const boil = Math.exp(-s / 3.5);                                  // violent boiling, then it calms down
+    this.layers.coils.children.forEach((m) => { if (!q.coils.includes(m.userData.id)) return;
+      m.material.emissive.set("#ff3b30"); m.material.emissiveIntensity = 0.35 + 2.6 * Math.exp(-s / 1.6) * (0.65 + 0.35 * Math.sin(s * 22)); });
+    if (this.mapMats?.B) this.mapMats.B.uniforms.uQ.value.set(q.z0, q.z1, fB);
+    if (Math.abs(q.fieldLast - fB) > 0.02 || (fB < 0.02 && q.fieldLast >= 0.02)) { q.fieldLast = fB; q.onField?.(fB); }
+    const f = Math.max(0, q.f0 - q.boilFill * (1 - Math.exp(-s / 2.2)));
+    if (Math.abs((this.cryoFill[q.vessel] ?? 1) - f) > 0.002) { this.setCryoFill(q.vessel, f); q.onLevel?.(f); }
+    const lvl = this.cryo[q.vessel]?.h ?? -1e9;
+    // bubbles rising through the helium annulus, popping at the surface
+    if (q.bubbles && q.seg) {
+      const g = q.seg, pos = q.bubbles.geometry.attributes.position, ri = g.ri + 6, ro = g.ro - 6;
+      q.bubbles.userData.p.forEach((b, i) => {
+        b.life -= dt;
+        if (b.life <= 0 || b.y > Math.min(lvl, ro)) {
+          if (Math.random() > boil * 1.2 || lvl < -ro + 5) { pos.setXYZ(i, 0, -1e5, 0); b.life = 0.1 + Math.random() * 0.4; b.y = -1e5; return; }
+          const r = ri + Math.random() * (ro - ri), a = Math.PI + (this.opts.cutaway ? Math.random() * Math.PI : Math.random() * 2 * Math.PI) - (this.opts.cutaway ? Math.PI / 2 : 0);
+          b.x = r * Math.cos(a); b.y = Math.min(r * Math.sin(a), lvl - 2); b.z = g.z0 + 10 + Math.random() * (g.z1 - g.z0 - 20); b.v = 60 + 240 * Math.random(); b.life = 3;
+        }
+        b.y += b.v * dt * (0.5 + boil); pos.setXYZ(i, b.z, b.y, b.x);
+      });
+      pos.needsUpdate = true; q.bubbles.material.opacity = 0.25 + 0.7 * boil;
+    }
+    // helium gas venting through the relief line at the top of the cryostat
+    if (q.vent) {
+      const pos = q.vent.geometry.attributes.position;
+      q.vent.userData.p.forEach((b, i) => {
+        b.life -= dt;
+        if (b.life <= 0) {
+          if (Math.random() > Math.exp(-s / 2.5) * 1.3) { pos.setXYZ(i, 0, -1e5, 0); b.life = 0.05; return; }
+          b.z = q.ventZ + (Math.random() - 0.5) * 60; b.y = q.ventY; b.x = (Math.random() - 0.5) * 60;
+          b.vy = 500 + 700 * Math.random(); b.vz = (Math.random() - 0.5) * 220; b.vx = (Math.random() - 0.5) * 220; b.life = 1.2 + Math.random();
+        }
+        b.y += b.vy * dt; b.z += b.vz * dt; b.x += b.vx * dt; b.vy *= 0.985; pos.setXYZ(i, b.z, b.y, b.x);
+      });
+      pos.needsUpdate = true; q.vent.material.opacity = 0.12 + 0.5 * Math.exp(-s / 2.5);
+    }
+  }
+
   frame(now) {
     const dt = Math.min(0.1, (now - this._last) / 1000); this._last = now;
     if (this.recording) return;
+    this.tickQuench(dt);
     if (this.story.playing) {
       const total = STORY.reduce((a, b) => a + b.dur, 0);
       this.setStory(this.story.u + (dt * this.time.speed) / total);
@@ -530,16 +620,19 @@ export class EventDisplay {
       tex.minFilter = tex.magFilter = THREE.LinearFilter; tex.needsUpdate = true;
       const vabs = Math.max(Math.abs(m.min), Math.abs(m.max), 1e-9);
       const mat = new THREE.ShaderMaterial({
-        uniforms: { map: { value: tex }, vmax: { value: kind === 0 ? m.max : vabs }, uScale: { value: 1 }, uOpacity: { value: 0.82 }, uStep: { value: step }, cmap: { value: kind }, uRcut: { value: 0 } },
+        uniforms: { map: { value: tex }, vmax: { value: kind === 0 ? m.max : vabs }, uScale: { value: 1 }, uOpacity: { value: 0.82 }, uStep: { value: step }, cmap: { value: kind }, uRcut: { value: 0 },
+          uZ0: { value: m.z0 }, uW: { value: m.nz * m.dz }, uQ: { value: new THREE.Vector3(0, 0, 1) } },
         vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-        fragmentShader: `uniform sampler2D map; uniform float vmax; uniform float uScale; uniform float uOpacity; uniform float uStep; uniform int cmap; uniform float uRcut; varying vec2 vUv;
+        fragmentShader: `uniform sampler2D map; uniform float vmax; uniform float uScale; uniform float uOpacity; uniform float uStep; uniform int cmap; uniform float uRcut; uniform float uZ0; uniform float uW; uniform vec3 uQ; varying vec2 vUv;
           vec3 turbo(float x){ x = clamp(x, 0.0, 1.0);
             return vec3(0.13572138 + x*(4.61539260 + x*(-42.66032258 + x*(132.13108234 + x*(-152.94239396 + x*59.28637943)))),
                         0.09140261 + x*(2.19418839 + x*(4.84296658 + x*(-14.18503333 + x*(4.27729857 + x*2.82956604)))),
                         0.10667330 + x*(12.64194608 + x*(-60.58204836 + x*(110.36276771 + x*(-89.90310912 + x*27.34824973))))); }
           void main(){
             if (vUv.y < uRcut) discard;
-            float v = texture2D(map, vUv).r * uScale;
+            float zz = uZ0 + vUv.x * uW;
+            float q = mix(1.0, uQ.z, smoothstep(uQ.x - 60.0, uQ.x + 60.0, zz) * (1.0 - smoothstep(uQ.y - 60.0, uQ.y + 60.0, zz)));
+            float v = texture2D(map, vUv).r * uScale * q;
             vec3 c; float a;
             if (cmap == 0) { float t = v / vmax; c = turbo(t); a = smoothstep(0.0, 0.04, t); }
             else { float t = clamp(v / vmax, -1.0, 1.0); t = sign(t) * pow(abs(t), 0.55);
@@ -585,13 +678,34 @@ export class EventDisplay {
     base.computeLineDistances();
     this.potFill.renderOrder = 7; base.renderOrder = 8; this.potLine.renderOrder = 9;
     [this.potFill, base, this.potLine].forEach((o) => { o.frustumCulled = false; this.layers.pot.add(o); });
-    this.potN = zE.length; this.Vmin = V[imin];
+    this.potN = zE.length; this.Vmin = V[imin]; this.potK = k; this.potY0 = y0; this.potZ = zE;
     const lab = (txt, x, y, cls) => { const el = document.createElement("div"); el.className = cls; el.textContent = txt; const o = new CSS2DObject(el); o.position.set(x, y, 0.5); this.layers.pot.add(o); return o; };
     lab("Φ(z) on axis", zE[0] + 70, y0 + 9, "lbl pot");
     lab("0 V", zE[zE.length - 1] + 25, y0, "lbl pot");
     this.potMin = lab(`${V[imin].toFixed(1)} V`, zE[imin], y0 + V[imin] * k - 9, "lbl potmin");
     this.potMinIdx = imin;
+    this.pulseLbls = (this.potDyn?.pulsed || []).map((q) => lab("", q.zc, y0 + 22, "lbl pulse"));
     if (this.story.on) this.setStory(this.story.u); else this.setStory(1, true);
+  }
+  // pulsed catching: Φ(z, t) = static part + Σ f_pulse(t) · V · φ_e(z)
+  setPulseProfile(dyn) { this.potDyn = dyn && dyn.pulsed?.length ? dyn : null; }
+  updatePotential(t) {
+    const d = this.potDyn; if (!d || !this.potLine || d.Vs.length !== this.potN) return;
+    const n = this.potN, k = this.potK, y0 = this.potY0, V = Float32Array.from(d.Vs);
+    const fs = d.pulsed.map((q) => pulseFactor(q, t));
+    d.pulsed.forEach((q, j) => { if (fs[j]) for (let i = 0; i < n; i++) V[i] += fs[j] * q.V * q.phi[i]; });
+    const lp = this.potLine.geometry.attributes.position, fp = this.potFill.geometry.attributes.position;
+    let imin = 0;
+    for (let i = 0; i < n; i++) {
+      const y = y0 + V[i] * k; lp.setY(i, y); if (V[i] < V[imin]) imin = i;
+      if (i) { fp.setY(6 * (i - 1) + 1, y0 + V[i - 1] * k); fp.setY(6 * (i - 1) + 2, y); fp.setY(6 * (i - 1) + 4, y); }
+    }
+    lp.needsUpdate = fp.needsUpdate = true;
+    this.potMinIdx = imin;
+    if (this.potMin) { this.potMin.element.textContent = `${V[imin].toFixed(1)} V`; this.potMin.position.set(this.potZ[imin], y0 + V[imin] * k - 9, 0.5); }
+    this.pulseLbls?.forEach((o, j) => { const q = d.pulsed[j], v = fs[j] * q.V;
+      o.element.textContent = `${q.id} ${Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + " kV" : v.toFixed(0) + " V"}`;
+      o.element.classList.toggle("on", fs[j] > 0.5); o.position.set(q.zc, y0 + Math.min(0, v) * k - 14, 0.5); });
   }
 
   /* ---------------- story mode ---------------- */
@@ -656,6 +770,7 @@ export class EventDisplay {
       const hide = (mat) => (mat.uniforms.uTime.value = -1);
       this.trackObjs?.forEach((o) => hide(o.material)); this.beadObjs?.forEach((o) => hide(o.material)); this.vertexPts && hide(this.vertexPts.material); this.hitPts && hide(this.hitPts.material); this.trapPts && hide(this.trapPts.material);
       for (const m of Object.values(this.scMeshes || {})) m.userData.flash = 0;
+      this.updatePotential(-Infinity); this._tPrev = null;
     } else this.setU(pt);
     // camera
     if (this.story.on && this.story.auto && !silent) this.storyCamera(i, p, zb);

@@ -354,11 +354,14 @@ np.savez("lne02_end.npz", x=p.x, px=p.px, y=p.y, py=p.py,
         </div>
         <div class="glass caption" id="d-caption" hidden><div class="cap-k" id="d-cap-k"></div><div class="cap-t" id="d-cap-t"></div><div class="cap-s" id="d-cap-s"></div></div>
         <div class="glass chapters" id="d-chapters" hidden></div>
+        <div class="glass explainer" id="d-explainer" hidden></div>
+        <div class="glass qalert" id="d-qalert" hidden></div>
         <div class="glass timeline">
           <div class="seg mini" id="d-mode"><button data-v="story">✦ Story</button><button data-v="tracks" class="on">Tracks</button></div>
           <button class="play" id="d-play" title="Play (space)"><svg viewBox="0 0 24 24"><path d="M7 4v16l13-8z"/></svg></button>
           <input type="range" id="d-time" min="0" max="1000" value="1000">
           <div class="tread" id="d-tread">t = — ns</div>
+          <button class="btn icon gifbtn sndbtn" id="d-sound" title="Annihilation sound: every detector hit plays a note">♪</button>
           <button class="btn icon gifbtn" id="d-gif" title="Save as GIF">GIF ⤓</button>
           <div class="seg mini" id="d-speed"><button data-v="0.5">½×</button><button data-v="1" class="on">1×</button><button data-v="2">2×</button></div>
         </div>

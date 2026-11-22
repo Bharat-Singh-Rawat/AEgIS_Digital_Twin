@@ -842,6 +842,7 @@ async function initDisplay() {
       onStory: storyHUD,
       onPlay: (on) => { $("#d-play").classList.toggle("on", on); $("#d-play").innerHTML = on ? '<svg viewBox="0 0 24 24"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>' : '<svg viewBox="0 0 24 24"><path d="M7 4v16l13-8z"/></svg>'; },
       onPick: showPick,
+      onHits: soundHits,
     });
     D.geo = await api("/api/geometry");
     D.viewer.cryoFill = store.get("cryoFill", {});
@@ -855,7 +856,11 @@ async function initDisplay() {
     seg("#d-mode", (v) => setStoryMode(v === "story"));
     const { STORY } = window.TwinViewer;
     $("#d-chapters").innerHTML = STORY.map((c, i) => `<button data-ch="${i}">${i + 1} · ${c.name}<span class="bar"></span></button>`).join("");
-    $$("#d-chapters button").forEach((b) => b.addEventListener("click", () => {
+    $("#d-chapters").insertAdjacentHTML("beforeend", `<button class="explain${EX.on ? " on" : ""}" id="d-explain" title="Pause at each chapter with a short explanation">ⓘ Explain</button>`);
+    $("#d-explain").addEventListener("click", () => { EX.on = !EX.on; store.set("explain", EX.on); $("#d-explain").classList.toggle("on", EX.on); if (!EX.on) $("#d-explainer").hidden = true; else EX.shown = -1; });
+    $("#d-sound").classList.toggle("on", SND.on);
+    $("#d-sound").addEventListener("click", () => { SND.on = !SND.on; store.set("sound", SND.on); $("#d-sound").classList.toggle("on", SND.on); if (SND.on) { sndInit(); sndNote(440, 0.25, 0, "triangle", 1.2); } });
+    $$("#d-chapters [data-ch]").forEach((b) => b.addEventListener("click", () => {
       const tot = STORY.reduce((a, c) => a + c.dur, 0); let u = 0; for (let k = 0; k < +b.dataset.ch; k++) u += STORY[k].dur / tot;
       D.viewer.story.auto = true; D.viewer.setStory(u + 1e-4); D.viewer.storyPlay(true);
     }));
@@ -901,6 +906,12 @@ function fillViewer(viewer, data, fmSource) {
   const useROM = data.params?.magnetModel !== 0;
   st.coils.forEach((c) => { const I = useROM ? (data.params?.["I_" + c.id] ?? c.default) : c.default; c.bz0.forEach((b, i) => (bz[i] += I * b)); });
   st.electrodes.forEach((e) => { const v = volts[e.id]; if (v) e.phi.forEach((f, i) => (V[i] += v * f)); });
+  // pulsed electrodes: Φ(z) follows the pulse in time (static part + f(t)·V·φ_e)
+  const pulsed = (data.pulses || []).map((p) => { const e = st.electrodes.find((x) => x.id === p.id); return e && { ...p, V: p.V ?? volts[p.id], phi: e.phi, zc: (e.z0 + e.z1) / 2 }; }).filter(Boolean);
+  const Vs = V.slice(); pulsed.forEach((q) => q.phi.forEach((f, i) => (Vs[i] -= q.V * f)));
+  viewer.setPulseProfile({ Vs, pulsed });
+  // per-coil on-axis contributions, so a quenched magnet's field can be collapsed
+  viewer._fieldSrc = { zB: st.zB, coils: st.coils.map((c) => ({ id: c.id, I: useROM ? (data.params?.["I_" + c.id] ?? c.default) : c.default, bz0: c.bz0 })) };
   viewer.setField(st.zB, bz); viewer.setPotential(st.zE, V);
   const fm = fmSource ? api("/api/fieldmaps/" + encodeURIComponent(fmSource)) : api("/api/fieldmaps", { params: data.params || {} });
   return fm.then((m) => { viewer.setFieldMaps(m); return { fm: m, V }; });
@@ -944,7 +955,8 @@ function storyHUD(u, i, p, x) {
   if ($("#d-cap-t").textContent !== t) { const c = $("#d-caption"); c.style.animation = "none"; c.offsetHeight; c.style.animation = ""; }
   $("#d-cap-k").textContent = k; $("#d-cap-t").textContent = t; $("#d-cap-s").textContent = sub;
   $("#d-tread").textContent = i === 3 ? "t = " + fmtTime(x.t) : `${i + 1} / 4`;
-  $$("#d-chapters button").forEach((b, j) => { b.classList.toggle("on", j === i); b.classList.toggle("done", j < i); $(".bar", b).style.width = j === i ? p * 100 + "%" : ""; });
+  $$("#d-chapters [data-ch]").forEach((b, j) => { b.classList.toggle("on", j === i); b.classList.toggle("done", j < i); $(".bar", b).style.width = j === i ? p * 100 + "%" : ""; });
+  explainStep(u, i);
 }
 function setStoryMode(on) {
   $("#d-caption").hidden = !on; $("#d-chapters").hidden = !on;
@@ -988,6 +1000,160 @@ function displayStats() {
   $("#d-stats").innerHTML = [["Events", ev < 0 ? D.events.length : 1], ["Tracks", tr.length], ["Annihilations", nAnn], ["π± produced", nPi], ["Scint. hits", nHit],
     nTrap != null ? ["Trapped p̄", nTrap] : ["Magnets", d.params?.magnetModel === 0 ? "analytic" : "CST ROM"]].map(([l, v]) => `<div><div class="l">${l}</div><div class="v">${v}</div></div>`).join("");
 }
+/* ---------------- annihilation sound ---------------- */
+// every scintillator hit plays a note: pitch from the slab's position along the beam (A minor pentatonic,
+// upstream = low, downstream = high), timbre from the particle, loudness from the deposited energy;
+// every annihilation vertex is a soft low drum
+const SND = { on: store.get("sound", false), ctx: null };
+const PENTA = [0, 3, 5, 7, 10];
+function sndInit() {
+  if (SND.ctx) { SND.ctx.resume(); return; }
+  const C = new (window.AudioContext || window.webkitAudioContext)();
+  const comp = C.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 8;
+  const master = C.createGain(); master.gain.value = 0.55;
+  const rev = C.createConvolver(), len = Math.floor(C.sampleRate * 2.4), ir = C.createBuffer(2, len, C.sampleRate);
+  for (let ch = 0; ch < 2; ch++) { const d = ir.getChannelData(ch); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3.2); }
+  rev.buffer = ir; const wet = C.createGain(); wet.gain.value = 0.32;
+  master.connect(comp); master.connect(rev); rev.connect(wet); wet.connect(comp); comp.connect(C.destination);
+  Object.assign(SND, { ctx: C, master });
+}
+function sndNote(freq, gain, pan, type, dur) {
+  const C = SND.ctx; if (!C) return; const t = C.currentTime;
+  const g = C.createGain(), pn = C.createStereoPanner(); pn.pan.value = pan;
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(gain, t + 0.006); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  g.connect(pn); pn.connect(SND.master);
+  for (const [mul, a] of [[1, 1], [2.01, 0.28], [3.98, 0.08]]) {      // a little bell shimmer
+    const o = C.createOscillator(), og = C.createGain(); o.type = mul === 1 ? type : "sine"; o.frequency.value = freq * mul; og.gain.value = a;
+    o.connect(og); og.connect(g); o.start(t); o.stop(t + dur + 0.05);
+  }
+}
+function sndThump(gain) {
+  const C = SND.ctx; if (!C) return; const t = C.currentTime;
+  const o = C.createOscillator(), g = C.createGain(); o.type = "sine";
+  o.frequency.setValueAtTime(95, t); o.frequency.exponentialRampToValueAtTime(38, t + 0.35);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(gain, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.55);
+  o.connect(g); g.connect(SND.master); o.start(t); o.stop(t + 0.6);
+}
+function soundHits(hits, anns) {
+  if (!SND.on || !SND.ctx) return;
+  const sc = (D.geo?.scintillators || []).slice().sort((a, b) => a.z0 - b.z0).map((x) => x.id);
+  // annihilations: one soft drum at most every ~100 ms, so "all events" playback stays musical
+  const now = SND.ctx.currentTime;
+  if (anns.length && now - (SND.lastThump || 0) > 0.1) { SND.lastThump = now; sndThump(Math.min(0.55, 0.3 + 0.05 * anns.length)); }
+  hits.slice(0, 10).forEach((h) => {
+    const k = Math.max(0, sc.indexOf(h[0])), pdg = Math.abs(h[6]), e = h[7] || 1;
+    let f = 220 * Math.pow(2, (12 * Math.floor(k / 5) + PENTA[k % 5]) / 12), type = "triangle", dur = 1.6, g = Math.min(0.55, 0.14 + 0.16 * e);
+    if (pdg === 11 || pdg === 22) { f *= 2; type = "sine"; dur = 0.55; g *= 0.6; }          // e± / γ: short, high
+    else if (pdg === 2212 || pdg > 1e9) { f /= 2; type = "sine"; dur = 1.0; }                 // protons / fragments: low
+    else if (pdg === 13) { type = "sawtooth"; g *= 0.4; dur = 0.8; }                          // muons: buzzy
+    sndNote(f, g, Math.max(-0.85, Math.min(0.85, h[3] / 1100)), type, dur);
+  });
+  const b = $("#d-sound"); b.classList.remove("ping"); void b.offsetWidth; b.classList.add("ping");
+}
+
+/* ---------------- explainer cards (story mode) ---------------- */
+const EX = { on: store.get("explain", false), shown: -1 };
+const EXPLAIN = [
+  { k: "1 · ELENA → AEgIS", t: "Antiprotons on demand", p: [
+      "Antiprotons are made at CERN by firing protons from the PS into a target. The Antiproton Decelerator slows them down, and the small ELENA ring (30 m around) slows them further, from 5.3 MeV to 100 keV.",
+      "The LNE transfer lines then steer each 100 keV bunch electrostatically to the experiments. Here the bunch arrives at the AEgIS delivery point."],
+    chips: () => [["ELENA", "5.3 MeV → 100 keV"], ["Bunch", "100 keV p̄"]], src: "AEgIS overview (2024)" },
+  { k: "2 · Magnets", t: "Why superconducting magnets?", p: [
+      "A charged particle in a magnetic field spirals around the field lines, so a strong axial field stops the antiprotons from drifting into the walls. AEgIS catches and cools them at 5 T: electrons lose energy by cyclotron radiation (∝ B²) and cool the antiprotons by collisions. Antihydrogen is formed in the gentler 1 T region.",
+      "The niobium-titanium coils only superconduct below 9 K, so they sit in liquid helium at 4.2 K, wrapped in a 77 K liquid-nitrogen shield inside a vacuum vessel."],
+    chips: () => { const c = cryoTotals(); return [["B max", (D.viewer.Bmax || 0).toFixed(2) + " T"], ["LHe now", `${Math.round(c.LHe.L)} L · coils covered ${fmtHold(c.LHe.h)}`], ["LN₂ now", `${Math.round(c.LN2.L)} L · ${fmtHold(c.LN2.h)}`]]; },
+    src: "Volponi (2024), Huck (2025)" },
+  { k: "3 · Electrodes", t: "A Penning–Malmberg trap", p: [
+      "The magnetic field holds particles radially; along the axis they are held by voltages on a stack of ring electrodes. For negatively charged antiprotons the −14 kV electrodes (HV1, HV2) are walls, and the electrodes near 0 V between them form the well where antiprotons and cooling electrons are stored.",
+      "The traps sit in an ultra-high vacuum of about 10⁻¹³ mbar, cryo-pumped by the cold walls, so the antiprotons can live for minutes to hours."],
+    chips: () => [["Electrodes", `${D.geo?.electrodes?.length || 66}`], ["Walls", "−14 kV"], ["Vacuum", "~10⁻¹³ mbar"]], src: "Volponi (2024), Huck (2025)" },
+  { k: "4 · Catching", t: "Catch, hold, annihilate", p: [
+      "The 100 keV antiprotons pass a thin degrader foil, which slows most of them to a few keV. HV2 reflects them, and HV1 is switched to −14 kV behind them in about 20 ns: pulsed catching. Watch the Φ(z) curve close.",
+      "An antiproton that touches matter annihilates with a nucleus. On average about three charged pions fly out through the cryostat and light up the scintillators: that is how the experiment sees antimatter. Turn on ♪ to hear each hit."],
+    chips: () => { const p = D.data?.pulses?.[0]; return [["Degrader", "1.5 µm Parylene"], p ? ["Pulse", `${p.id} closes at ${p.t0} ns${p.open ? ", opens at " + fmtTime(p.open) : ""}`] : ["Pulse", "static"], ["Trapped", `${D.data?.trapped?.n ?? "—"}`]]; },
+    src: "this G4beamline run" },
+  { k: "What comes next", t: "Towards a beam of antihydrogen", p: [
+      "The cooled antiprotons are moved to the 1 T trap. Laser-excited (Rydberg) positronium passes by and hands over its positron, which forms antihydrogen. The antihydrogen is neutral, so it leaves the trap as a beam.",
+      "AEgIS aims to measure how that beam falls in Earth's gravity: does antimatter fall like matter?"],
+    chips: () => [], src: "AEgIS" },
+];
+const fmtHold = (h) => (h >= 48 ? (h / 24).toFixed(1) + " days" : h.toFixed(0) + " h");
+function explainShow(i) {
+  const c = EXPLAIN[i], box = $("#d-explainer"); EX.shown = i;
+  box.innerHTML = `<div class="ex-k">${c.k}</div><h3>${c.t}</h3>${c.p.map((t) => `<p>${t}</p>`).join("")}
+    <div class="chips">${c.chips().map(([a, b]) => `<span>${a} <b>${b}</b></span>`).join("")}</div>
+    <div class="row"><span class="src">${c.src}</span><button class="btn small" id="ex-off">Hide explanations</button>${i < EXPLAIN.length - 1 ? `<button class="btn small primary" id="ex-go">Continue ›</button>` : `<button class="btn small primary" id="ex-close">Close</button>`}</div>`;
+  box.hidden = false; box.style.animation = "none"; box.offsetHeight; box.style.animation = "";
+  $("#ex-off").onclick = () => { EX.on = false; store.set("explain", false); $("#d-explain").classList.remove("on"); box.hidden = true; D.viewer.storyPlay(true); };
+  if ($("#ex-go")) $("#ex-go").onclick = () => { box.hidden = true; D.viewer.storyPlay(true); };
+  if ($("#ex-close")) $("#ex-close").onclick = () => (box.hidden = true);
+}
+function explainStep(u, i) {
+  if (!EX.on || !D.viewer?.story.on) return;
+  if (u >= 0.999 && EX.shown !== EXPLAIN.length - 1) return explainShow(EXPLAIN.length - 1);
+  if (D.viewer.story.playing && i !== EX.shown && u < 0.999 && i > EX.shown) { D.viewer.storyPlay(false); explainShow(i); }
+  if (i < EX.shown && u < 0.999) EX.shown = i - 1;          // jumped back: show it again next time
+}
+
+/* ---------------- quench & boil-off scenarios ---------------- */
+const QS = { timer: null, hours: 0, quenched: null };
+const HOURS_PER_SEC = 3;
+function cryoTotals() {
+  const out = { LHe: { L: 0 }, LN2: { L: 0 } };
+  (D.geo?.cryo || []).forEach((v) => { const st = D.viewer?.cryoState(v.id); if (st) out[v.cryogen].L += st.litres; });
+  out.LN2.h = (24 * out.LN2.L) / CRYO_USE.LN2;
+  // helium: what matters is how long every coil stays covered, not when the last drop is gone
+  const capAll = (D.geo?.cryo || []).filter((v) => v.cryogen === "LHe").reduce((a, v) => a + (D.viewer?.cryoState(v.id)?.capacity || 0), 0);
+  const hrs = (D.geo?.magnets || []).map((m) => { const st = D.viewer?.cryoState(m.vessel), c = coilCover(m); if (!st || !c.top) return Infinity;
+    const usable = Math.max(0, st.litres - c.litres), rate = (CRYO_USE.LHe * st.capacity) / capAll; return (24 * usable) / rate; });
+  out.LHe.h = Math.min(...hrs, (24 * out.LHe.L) / CRYO_USE.LHe); return out;
+}
+// helium level relative to the top of a magnet's coil pack (mm, + = coils covered)
+function coilCover(m) {
+  const c = D.viewer.cryo[m.vessel]; if (!c) return Infinity;
+  const top = Math.max(...D.geo.coils.filter((k) => m.coils.includes(k.id)).map((k) => k.ro));
+  return { top, above: c.h - top, litres: D.viewer.cryoLitres(c.v, top) };
+}
+function qAlert(html, quench) { const a = $("#d-qalert"); a.innerHTML = html; a.classList.toggle("quench", !!quench); a.hidden = !html; }
+function quenchField(m, fB) {
+  const src = D.viewer._fieldSrc; if (!src) return;
+  const bz = new Array(src.zB.length).fill(0);
+  src.coils.forEach((c) => { const I = c.I * (m.coils.includes(c.id) ? fB : 1); c.bz0.forEach((b, i) => (bz[i] += I * b)); });
+  D.viewer.setField(src.zB, bz);
+}
+function quenchMagnet(id) {
+  const m = D.geo.magnets.find((x) => x.id === id); if (!m) return;
+  stopBoiloff(); const st = D.viewer.cryoState(m.vessel); QS.quenched = id;
+  D.viewer.startQuench({ id, coils: m.coils, z0: m.z0, z1: m.z1, vessel: m.vessel, boilFill: m.boil_litres / st.capacity,
+    onField: (fB) => quenchField(m, fB), onLevel: () => cryoSync() });
+  qAlert(`⚡ <b>QUENCH · ${m.name}</b> — the coil turns normal-conducting and its field collapses
+    <span class="qs">≈ ${m.stored_MJ} MJ of stored energy ends up in the helium bath · up to ≈ ${Math.round(m.boil_litres)} L of liquid helium boils off and vents ·
+    the antiprotons lose their radial confinement (estimate: uniform-solenoid energy, no dump resistor)</span>`, true);
+}
+function stopBoiloff() { clearInterval(QS.timer); QS.timer = null; $("#cr-boil")?.classList.remove("primary"); }
+function startBoiloff() {
+  if (QS.timer) { stopBoiloff(); qAlert(""); return; }
+  D.viewer.stopQuench(); QS.quenched = null; QS.hours = 0; let last = performance.now();
+  $("#cr-boil").classList.add("primary");
+  QS.timer = setInterval(() => {
+    const now = performance.now(), dh = ((now - last) / 1000) * HOURS_PER_SEC; last = now; QS.hours += dh;
+    for (const k of ["LHe", "LN2"]) {
+      const g = D.geo.cryo.filter((v) => v.cryogen === k), cap = g.reduce((a, v) => a + D.viewer.cryoState(v.id).capacity, 0);
+      g.forEach((v) => { const s0 = D.viewer.cryoState(v.id); D.viewer.setCryoFill(v.id, (s0.litres - (CRYO_USE[k] / 24) * dh * s0.capacity / cap) / s0.capacity); });
+    }
+    cryoSync();
+    const rows = D.geo.magnets.map((m) => ({ m, c: coilCover(m) }));
+    const hit = rows.find((r) => Number.isFinite(r.c.above) && r.c.above < 0);
+    qAlert(`⏱ <b>Boil-off time-lapse · +${QS.hours.toFixed(0)} h</b> without refilling
+      <span class="qs">${rows.map((r) => `${r.m.name}: ${Number.isFinite(r.c.above) ? `helium ${r.c.above.toFixed(0)} mm above the coils` : "vessel full"}`).join(" · ")} · AEgIS refills every couple of days</span>`);
+    if (hit) quenchMagnet(hit.m.id);
+  }, 60);
+}
+function resetScenario() {
+  stopBoiloff(); D.viewer.stopQuench(); QS.quenched = null; qAlert("");
+  (D.geo?.cryo || []).forEach((v) => D.viewer.setCryoFill(v.id, 1)); cryoSync();
+}
+
 /* ---------------- cryogen fill levels ---------------- */
 const CRYO_USE = { LHe: 150, LN2: 5 };     // L/day in operation, Derking et al. 2014
 function buildCryoUI() {
@@ -996,10 +1162,16 @@ function buildCryoUI() {
   const col = { LHe: "#5ac8fa", LN2: "#7d7aff" };
   box.innerHTML = vs.map((v) => `<div class="cr-row"><span><i style="background:${col[v.cryogen]}"></i>${v.cryogen === "LHe" ? "LHe" : "LN₂"} · ${v.magnet}</span><b id="cr-v-${v.id}"></b></div>
       <input type="range" min="0" max="100" step="1" data-cryo="${v.id}" style="--c:${col[v.cryogen]}">`).join("") +
-    `<div class="cr-sum" id="cr-sum"></div><div class="cr-btns"><button class="btn small" id="cr-fill">Fill all</button><button class="btn small" id="cr-day">+1 day boil-off</button></div>`;
+    `<div class="cr-sum" id="cr-sum"></div><div class="cr-btns"><button class="btn small" id="cr-fill">Fill all</button><button class="btn small" id="cr-day">+1 day boil-off</button></div>
+     <div class="cr-sum" style="margin-top:9px">Scenarios</div>
+     <div class="cr-btns"><button class="btn small" id="cr-boil" title="Time-lapse: no refills until the helium uncovers a coil">⏱ Boil-off</button><button class="btn small" id="cr-reset">Reset</button></div>
+     <div class="cr-sum" style="margin-top:6px">Quench a magnet</div>
+     <div class="cr-btns"><button class="btn small" id="cr-q5" title="Quench the 5 T solenoid">⚡ 5 T</button><button class="btn small" id="cr-q1" title="Quench the 1 T solenoid">⚡ 1 T</button></div>`;
   const set = (id, f) => { D.viewer.setCryoFill(id, f); };
   box.querySelectorAll("[data-cryo]").forEach((r) => r.addEventListener("input", () => { set(r.dataset.cryo, r.value / 100); cryoSync(); }));
-  $("#cr-fill").onclick = () => { vs.forEach((v) => set(v.id, 1)); cryoSync(); };
+  $("#cr-fill").onclick = () => resetScenario();
+  $("#cr-boil").onclick = () => startBoiloff(); $("#cr-reset").onclick = () => resetScenario();
+  $("#cr-q5").onclick = () => quenchMagnet("5T"); $("#cr-q1").onclick = () => quenchMagnet("1T");
   // one day of operation: the published consumption, shared between the vessels of a cryogen by their capacity
   $("#cr-day").onclick = () => {
     for (const k of ["LHe", "LN2"]) {
@@ -1020,11 +1192,8 @@ function cryoSync() {
     $(`#cr-v-${v.id}`).textContent = `${Math.round(st.litres)} / ${Math.round(st.capacity)} L`;
   });
   store.set("cryoFill", fill);
-  $("#cr-sum").innerHTML = ["LHe", "LN2"].map((k) => {
-    const g = vs.map((v) => v.cryogen === k && D.viewer.cryoState(v.id)).filter(Boolean);
-    const L = g.reduce((a, s) => a + s.litres, 0), h = (24 * L) / CRYO_USE[k];
-    return `${k === "LHe" ? "LHe" : "LN₂"} ${Math.round(L)} L · lasts ≈ ${h >= 48 ? (h / 24).toFixed(1) + " days" : h.toFixed(0) + " h"} at ${CRYO_USE[k]} L/day`;
-  }).join("<br>");
+  const tot = cryoTotals();
+  $("#cr-sum").innerHTML = `LHe ${Math.round(tot.LHe.L)} L · coils covered ≈ ${fmtHold(tot.LHe.h)} at ${CRYO_USE.LHe} L/day<br>LN₂ ${Math.round(tot.LN2.L)} L · lasts ≈ ${fmtHold(tot.LN2.h)} at ${CRYO_USE.LN2} L/day` + (D.geo?.magnets || []).map((m) => { const c = coilCover(m); return Number.isFinite(c.above) && c.above < 0 ? `<br><span class="cr-warn">⚠ ${m.name} coils uncovered (${(-c.above).toFixed(0)} mm)</span>` : ""; }).join("");
   if (D.pick?.type === "cryo") showPick(D.pick);
 }
 function showPick(p) {
@@ -1045,13 +1214,13 @@ function showPick(p) {
   } else if (p.type === "electrode") {
     html = `<h4>Electrode ${p.id}</h4><dl><dt>Group</dt><dd>${p.group}</dd><dt>z (CST)</dt><dd>${p.z0.toFixed(1)} … ${p.z1.toFixed(1)} mm</dd><dt>Radius</dt><dd>${p.ri} – ${p.ro} mm</dd><dt>Voltage (run)</dt><dd>${p.V ?? 0} V</dd></dl>`;
   } else if (p.type === "cryo") {
-    const g = p.segments, ri = Math.min(...g.map((x) => x.ri)), ro = Math.max(...g.map((x) => x.ro));
+    const g = p.segments, bath = g.filter((x) => !x.yc), res = g.find((x) => x.yc), ri = Math.min(...bath.map((x) => x.ri)), ro = Math.max(...bath.map((x) => x.ro));
     html = `<h4><i style="background:${p.cryogen === "LHe" ? "#5ac8fa" : "#7d7aff"}"></i>${p.name}</h4><dl>
       <dt>Temperature</dt><dd>${p.T} K</dd>${(() => { const st = D.viewer?.cryoState(p.id) || { litres: p.litres, capacity: p.litres, fill: 1, level: Infinity };
         return `<dt>Liquid</dt><dd>${st.litres.toFixed(1)} of ${st.capacity.toFixed(1)} L (${(st.litres * p.mass_kg / p.litres).toFixed(1)} kg)</dd>
         <dt>Fill / level</dt><dd>${Math.round(st.fill * 100)} %${Number.isFinite(st.level) ? ` · surface at y = ${st.level.toFixed(0)} mm` : st.fill >= 0.999 ? " · full" : " · empty"}</dd>`; })()}
       ${p.coil_litres ? `<dt>Displaced by coils</dt><dd>${p.coil_litres} L</dd>` : ""}
-      <dt>z (CST)</dt><dd>${g[0].z0.toFixed(0)} … ${g[g.length - 1].z1.toFixed(0)} mm</dd><dt>Radius</dt><dd>${ri} – ${ro} mm (wall ${p.wall} mm)</dd>
+      <dt>z (CST)</dt><dd>${Math.min(...g.map((x) => x.z0)).toFixed(0)} … ${Math.max(...g.map((x) => x.z1)).toFixed(0)} mm</dd><dt>${res ? "Bath" : "Radius"}</dt><dd>r ${ri} – ${ro} mm (wall ${p.wall} mm)</dd>${res ? `<dt>Reservoir</dt><dd>Ø${2 * res.ro} mm × ${res.z1 - res.z0} mm, centre ${res.yc} mm above the axis</dd>` : ""}
       <dt>Role</dt><dd>${p.role}</dd></dl>
       <p class="muted" style="font-size:11px;margin:6px 0 0">Nesting (LHe → LN₂ shield → MLI → OVC), bores and consumption are published (Volponi 2024, Huck 2025, Dudarev 2012, Derking 2014);
       wall radii are sized so LHe lasts ~2 days and LN₂ ~3 months at that consumption (no drawing published).</p>`;
