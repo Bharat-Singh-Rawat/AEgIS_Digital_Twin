@@ -998,7 +998,7 @@ function displayStats() {
   const traced = new Set(D.events), inView = (e) => (ev < 0 ? traced.has(e) : e === ev);   // count only events that were traced
   const nAnn = d.vertices.ev.filter(inView).length, nHit = d.hits.filter((h) => inView(h[5])).length;
   const nPi = tr.filter((t) => Math.abs(t.pdg) === 211).length;
-  const nTrap = d.trapped ? d.trapped.ev.filter(inView).length : null;
+  const nTrap = d.trapped ? (d.trapped.ev || []).filter(inView).length : null;
   $("#d-stats").innerHTML = [["Events", ev < 0 ? D.events.length : 1], ["Tracks", tr.length], ["Annihilations", nAnn], ["π± produced", nPi], ["Scint. hits", nHit],
     nTrap != null ? ["Trapped p̄", nTrap] : ["Magnets", d.params?.magnetModel === 0 ? "analytic" : "CST ROM"]].map(([l, v]) => `<div><div class="l">${l}</div><div class="v">${v}</div></div>`).join("");
 }
