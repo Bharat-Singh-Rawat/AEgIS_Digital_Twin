@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AEgIS Twin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+<script src="vendor/plotly.min.js"></script>
+<script src="vendor/gif.js"></script>
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+</head>
+<body>
+<div class="window">
+  <!-- ===================== SIDEBAR ===================== -->
+  <aside class="sidebar">
+    <div class="traffic"><span></span><span></span><span></span></div>
+    <div class="brand">
+      <div class="app-icon">
+        <svg viewBox="0 0 40 40"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5e5ce6"/><stop offset="1" stop-color="#0a84ff"/></linearGradient></defs>
+          <rect width="40" height="40" rx="10" fill="url(#g)"/>
+          <ellipse cx="20" cy="20" rx="13" ry="5" fill="none" stroke="#fff" stroke-width="1.6" opacity=".9"/>
+          <ellipse cx="20" cy="20" rx="13" ry="5" fill="none" stroke="#fff" stroke-width="1.6" opacity=".9" transform="rotate(60 20 20)"/>
+          <ellipse cx="20" cy="20" rx="13" ry="5" fill="none" stroke="#fff" stroke-width="1.6" opacity=".9" transform="rotate(-60 20 20)"/>
+          <circle cx="20" cy="20" r="2.6" fill="#fff"/></svg>
+      </div>
+      <div><div class="brand-title">AEgIS Twin</div><div class="brand-sub">ELENA → Penning trap</div></div>
+    </div>
+
+    <nav>
+      <div class="nav-label">Workspace</div>
+      <a data-page="overview" class="active"><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4zm0 7h6v-5H4zm10 0h6v-9h-6zm0-16v5h6V4z"/></svg>Overview</a>
+      <div class="nav-label">Model</div>
+      <a data-page="beam"><svg viewBox="0 0 24 24"><path d="M2 12h14m0 0-4-4m4 4-4 4" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="20" cy="12" r="2.2"/></svg>Beam</a>
+      <a data-page="magnets"><svg viewBox="0 0 24 24"><path d="M6 3v9a6 6 0 0 0 12 0V3h-4v9a2 2 0 0 1-4 0V3z"/></svg>Magnets</a>
+      <a data-page="electrodes"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>Electrodes</a>
+      <div class="nav-label">Simulation</div>
+      <a data-page="simulate"><svg viewBox="0 0 24 24"><path d="M7 4v16l13-8z"/></svg>Simulate<span class="badge" id="nav-running" hidden>0</span></a>
+      <a data-page="results"><svg viewBox="0 0 24 24"><path d="M4 20V10h3v10zm6.5 0V4h3v16zM17 20v-7h3v7z"/></svg>Results</a>
+      <a data-page="surrogate"><svg viewBox="0 0 24 24"><path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8zM19 14l.9 2.6L22.5 17.5l-2.6.9L19 21l-.9-2.6-2.6-.9 2.6-.9zM5 15l.7 1.8 1.8.7-1.8.7L5 20l-.7-1.8L2.5 17.5l1.8-.7z"/></svg>Surrogate</a>
+      <a data-page="display"><svg viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7zm0 2.3 6.6 3.7L12 11.7 5.4 8zM5 9.7l6 3.4v6.6l-6-3.4zm8 10V13.1l6-3.4v6.6z"/></svg>Event Display</a>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="status-row user-row" id="st-user" hidden></div>
+      <div class="status-row"><span class="dot" id="st-g4bl"></span>G4beamline</div>
+      <div class="status-row"><span class="dot" id="st-maps"></span>Field maps</div>
+      <div class="status-row"><span class="dot" id="st-xsuite"></span>Xsuite</div>
+      <div class="seg mini" id="theme-seg">
+        <button data-v="light" title="Light">☀︎</button><button data-v="auto" title="Automatic">A</button><button data-v="dark" title="Dark">☾</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===================== MAIN ===================== -->
+  <main>
+    <!-- OVERVIEW -->
+    <section class="page active" id="page-overview">
+      <header><h1>Overview</h1><p class="sub">One model from the ELENA extraction to the annihilation vertex, in the CST coordinate frame.</p></header>
+      <div class="pipeline" id="pipeline"></div>
+      <div class="grid2">
+        <div class="card">
+          <h3>System</h3>
+          <dl class="kv" id="sys-kv"></dl>
+        </div>
+        <div class="card" id="rebuild-card">
+          <h3>Rebuild model</h3>
+          <p class="muted">Regenerates the per-coil and per-electrode field maps and <code>PenningTrap_CST.g4bl</code>. Point it at your CST electrostatic exports to replace the Laplace stand-in basis.</p>
+          <label class="field"><span>CST electrostatic Results folder (optional)</span><input id="cst-folder" placeholder="/path/to/EfieldRuns/Results"></label>
+          <div class="row"><button class="btn" id="btn-rebuild">Rebuild</button><span class="muted" id="rebuild-msg"></span></div>
+          <pre class="log" id="rebuild-log" hidden></pre>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Storage</h3><button class="btn small" id="ov-manage">Manage runs</button></div>
+        <div class="tiles" id="ov-storage"></div>
+      </div>
+      <div class="card">
+        <h3>Recent runs</h3>
+        <div id="ov-runs" class="list"></div>
+      </div>
+    </section>
+
+    <!-- BEAM -->
+    <section class="page" id="page-beam">
+      <header><h1>Beam</h1><p class="sub">Antiprotons handed over from the ELENA → LNE02 Xsuite line at the AEgIS delivery point.</p></header>
+      <div class="grid-side">
+        <div class="card">
+          <div class="seg" id="beam-mode"><button data-v="gauss" class="on">Gaussian</button><button data-v="xsuite">Xsuite particles</button></div>
+          <div id="beam-gauss" class="form">
+            <label class="field"><span>Particles</span><input type="number" id="g-n" value="1000"></label>
+            <label class="field"><span>Kinetic energy (keV)</span><input type="number" id="g-ke" value="100" step="1"></label>
+            <div class="two"><label class="field"><span>σx (mm)</span><input type="number" id="g-sx" value="2.5" step="0.1"></label>
+            <label class="field"><span>σx′ (mrad)</span><input type="number" id="g-sxp" value="0.95448" step="0.01"></label></div>
+            <div class="two"><label class="field"><span>σy (mm)</span><input type="number" id="g-sy" value="2.5" step="0.1"></label>
+            <label class="field"><span>σy′ (mrad)</span><input type="number" id="g-syp" value="0.36478" step="0.01"></label></div>
+            <label class="field"><span>σδ (momentum spread)</span><input type="number" id="g-sd" value="0.001" step="0.0001"></label>
+          </div>
+          <div id="beam-xsuite" class="form" hidden>
+            <p class="muted">Save the tracked particles at <code>LNE02$END</code> from your Xsuite script, then point to the file:</p>
+            <pre class="code">import numpy as np
+p = particles  # xp.Particles at lne02$end
+np.savez("lne02_end.npz", x=p.x, px=p.px, y=p.y, py=p.py,
+         zeta=p.zeta, delta=p.delta, p0c=p.p0c, state=p.state)</pre>
+            <label class="field"><span>Upload .npz</span><input type="file" id="x-file" accept=".npz"></label>
+            <label class="field" id="x-npz-field"><span>…or path on this machine</span><input id="x-npz" placeholder="~/AEgIS_Xsuite_models/lne02_end.npz"></label>
+          </div>
+          <div class="two">
+            <label class="field"><span>Delivery plane z (CST, mm)</span><input type="number" id="b-zdel" value="-1073"></label>
+            <label class="field"><span>G4BL start z (blank = same)</span><input type="number" id="b-zst" placeholder=""></label>
+          </div>
+          <label class="field"><span>Beam name</span><input id="b-name" value="gauss_100keV"></label>
+          <button class="btn primary wide" id="btn-beam">Create beam</button>
+          <p class="err" id="beam-err"></p>
+        </div>
+        <div class="stack">
+          <div class="card">
+            <div class="card-head"><h3>Phase space</h3>
+              <select id="beam-select"></select></div>
+            <div class="tiles" id="beam-tiles"></div>
+            <div class="grid3"><div id="pl-xxp" class="plot sm"></div><div id="pl-yyp" class="plot sm"></div><div id="pl-xy" class="plot sm"></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- MAGNETS -->
+    <section class="page" id="page-magnets">
+      <header class="with-actions"><div><h1>Magnets</h1><p class="sub">23 superconducting and corrector coils. CST magnetostatic ROM, B = Σ Iₖ·bₖ.</p></div>
+        <div class="actions"><button class="btn" id="mag-zero">Zero correctors</button><button class="btn" id="mag-reset">Reset to nominal</button></div></header>
+      <div class="card">
+        <div class="tiles" id="mag-tiles"></div>
+        <div id="pl-mag" class="plot"></div>
+        <div class="row small"><label class="switch"><input type="checkbox" id="mag-ref" checked><i></i></label>CST ROM nominal
+          <label class="switch"><input type="checkbox" id="mag-r10"><i></i></label>Off-axis (r = 10 mm)</div>
+      </div>
+      <div id="coil-groups"></div>
+    </section>
+
+    <!-- ELECTRODES -->
+    <section class="page" id="page-electrodes">
+      <header class="with-actions"><div><h1>Electrodes</h1><p class="sub">66 trap electrodes. Electrostatic ROM, Φ = Σ Vᵢ·φᵢ.</p></div>
+        <div class="actions"><button class="btn" id="el-zero">All 0 V</button><button class="btn" id="el-reset">Reset to nominal</button></div></header>
+      <div class="card">
+        <div class="tiles" id="el-tiles"></div>
+        <div id="pl-el" class="plot"></div>
+        <div id="el-strip" class="strip"></div>
+        <p class="muted small" id="el-source"></p>
+      </div>
+      <div class="row"><div class="seg" id="el-filter"></div></div>
+      <div class="el-grid" id="el-grid"></div>
+    </section>
+
+    <!-- SIMULATE -->
+    <section class="page" id="page-simulate">
+      <header><h1>Simulate</h1><p class="sub">Track the beam through the tuned fields with G4beamline.</p></header>
+      <div class="grid-side">
+        <div class="card">
+          <label class="field"><span>Run name</span><input id="r-name"></label>
+          <label class="field"><span>Events</span><input type="number" id="r-n" value="1000" min="1"></label>
+          <div class="field"><span>Magnetic field</span><div class="seg" id="r-mag"><button data-v="1" class="on">CST ROM</button><button data-v="0">Analytic</button></div></div>
+          <div class="field"><span>Electric field</span><div class="seg" id="r-ef"><button data-v="1" class="on">ROM</button><button data-v="2">Analytic well</button><button data-v="0">Off</button></div></div>
+          <div class="field"><span>Beam</span><select id="r-beam"></select></div>
+          <label class="field"><span>Record trajectories for 3D display (first N events, 0 = off)</span><input type="number" id="r-trace" value="100" min="0" max="2000"></label>
+          <button class="btn primary wide big" id="btn-run">Run simulation</button>
+          <p class="muted small" id="run-limits"></p>
+          <p class="err" id="run-err"></p>
+          <hr>
+          <h4>Scenario</h4>
+          <div class="row"><input id="sc-name" placeholder="scenario name"><button class="btn" id="sc-save">Save</button></div>
+          <div class="row"><select id="sc-list"></select><button class="btn" id="sc-load">Load</button></div>
+        </div>
+        <div class="stack">
+          <div class="card" id="catch-card">
+            <div class="card-head"><h3>Degrader &amp; catching</h3><div class="row" style="margin:0"><button class="btn" id="c-preset">Catching preset</button><button class="btn" id="c-dump">Catch &amp; dump</button></div></div>
+            <div class="two">
+              <label class="field"><span>Degrader foil (ParyleneN, µm)</span><input type="number" id="c-deg" value="1.5" min="0" max="5" step="0.05"></label>
+              <label class="field"><span>Tracking time (µs)</span><input type="number" id="c-time" value="10" min="0.1" max="200" step="0.5"></label>
+            </div>
+            <p class="muted small" id="c-deg-hint"></p>
+            <label class="tg"><span><b>Pulsed catching</b> — close an HV electrode after the bunch has entered</span><span class="switch"><input type="checkbox" id="c-on"><i></i></span></label>
+            <div id="c-pulse" class="pulse-grid" hidden>
+              <label class="field"><span>Pulsed electrode</span><select id="c-el"></select></label>
+              <label class="field"><span>Pulse voltage (kV)</span><input type="number" id="c-v" value="-14" step="0.5"></label>
+              <label class="field"><span>Close at t₀ (ns)</span><input type="number" id="c-t0" value="450" step="10" min="0"></label>
+              <label class="field"><span>Rise time (ns)</span><input type="number" id="c-rise" value="20" step="5" min="1"></label>
+              <label class="field"><span>Release at (ns, 0 = never)</span><input type="number" id="c-open" value="0" step="100" min="0"></label>
+              <label class="field"><span>Reflector electrode</span><select id="c-ref"></select></label>
+              <label class="field"><span>Reflector voltage (kV)</span><input type="number" id="c-refv" value="-14" step="0.5"></label>
+            </div>
+            <div id="c-timing" class="pulse-timeline" hidden></div>
+          </div>
+          <div class="card"><h3>This run</h3><div id="run-summary" class="chips"></div></div>
+          <div class="card"><h3>Queue</h3><div id="run-queue" class="list"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RESULTS -->
+    <section class="page" id="page-results">
+      <header><h1>Results</h1><p class="sub">Annihilation vertices, detector response and energy deposition.</p></header>
+      <div class="grid-results">
+        <div class="card runlist">
+          <div class="card-head"><h3>Runs</h3><button class="btn small" id="rm-toggle">Manage</button></div>
+          <p class="muted small" id="rm-hint">Click to open, ⌘/Ctrl-click to compare.</p>
+          <div class="rm-bar" id="rm-bar" hidden>
+            <div class="row small"><button class="btn small" id="rm-all">Select all</button><button class="btn small" id="rm-old">Older than…</button><button class="btn small" id="rm-none">None</button></div>
+            <div class="rm-sum" id="rm-sum">0 selected</div>
+            <button class="btn danger wide" id="rm-del" disabled>Delete selected</button>
+          </div>
+          <div id="res-runs" class="list sel"></div>
+        </div>
+        <div class="stack">
+          <div class="tiles big" id="res-tiles"></div>
+          <div class="card"><h3>Annihilations along the trap</h3><div id="pl-annz" class="plot"></div></div>
+          <div class="grid2">
+            <div class="card"><h3>Vertex map (r–z)</h3><div id="pl-annrz" class="plot sm2"></div></div>
+            <div class="card"><h3>Transverse (x–y)</h3><div id="pl-annxy" class="plot sm2"></div></div>
+          </div>
+          <div class="grid2">
+            <div class="card"><h3>By electrode</h3><div id="pl-byel" class="plot sm2"></div></div>
+            <div class="card"><h3>Scintillator events</h3><div id="pl-sc" class="plot sm2"></div></div>
+          </div>
+          <div class="card"><div class="card-head"><h3>Run parameters</h3><button class="btn small danger" id="res-del">Delete this run</button></div><div id="res-params" class="chips"></div></div>
+          <div class="section-h"><h2>Physics</h2><div id="ph-chips" class="chips"></div></div>
+          <div class="card"><h3>Fields and where the p̄ stop</h3><p class="muted small">Annihilation profile with the run's on-axis Bz and electrostatic potential.</p><div id="ph-fields" class="plot"></div></div>
+          <div class="grid2">
+            <div class="card"><h3>Fate of every antiproton</h3><div id="ph-fate" class="plot sm2"></div></div>
+            <div class="card"><h3>p̄ after the degrader</h3><div id="ph-deg" class="plot sm2"></div></div>
+          </div>
+          <div class="card"><h3>Annihilation products: energy spectra</h3><p class="muted small">Kinetic energy at creation of the direct annihilation products, per annihilation.</p><div id="ph-ke" class="plot"></div></div>
+          <div class="grid3w">
+            <div class="card"><h3>Charged-pion multiplicity</h3><div id="ph-mult" class="plot sm2"></div></div>
+            <div class="card"><h3>Pion polar angle</h3><div id="ph-cth" class="plot sm2"></div></div>
+            <div class="card"><h3>Pion azimuth φ</h3><div id="ph-phi" class="plot sm2"></div></div>
+          </div>
+          <div class="grid2">
+            <div class="card"><h3>Scintillator time-of-flight map</h3><div id="ph-tof" class="plot sm2"></div></div>
+            <div class="card"><h3>Detector coincidences</h3><div id="ph-coinc" class="plot sm2"></div></div>
+          </div>
+          <div class="grid3w">
+            <div class="card"><h3>Annihilation time</h3><div id="ph-time" class="plot sm2"></div></div>
+            <div class="card"><h3>Energy deposit per hit</h3><div id="ph-edep" class="plot sm2"></div></div>
+            <div class="card"><h3>Particle census</h3><div id="ph-census" class="plot sm2"></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <!-- SURROGATE -->
+    <section class="page" id="page-surrogate">
+      <header><h1>Surrogate</h1><p class="sub">Instant predictions of the G4beamline outcome from a Gaussian-process model trained on sampled runs.</p></header>
+      <div class="grid-side">
+        <div class="card">
+          <h3>New surrogate</h3>
+          <label class="field"><span>Name</span><input id="sg-name" placeholder="e.g. catch_timing"></label>
+          <div class="field"><span>Knobs to vary</span>
+            <div class="chips sg-presets"><button class="btn small" data-sgp="catch">Catching timing</button><button class="btn small" data-sgp="hv">Pulse &amp; reflector</button><button class="btn small" data-sgp="mag">Main solenoids</button></div>
+            <div id="sg-knobs" class="sg-knobs"></div>
+            <button class="btn small" id="sg-add">+ Add knob</button>
+          </div>
+          <div class="two">
+            <label class="field"><span>Initial samples</span><input type="number" id="sg-n" value="32" min="4" max="512"></label>
+            <label class="field"><span>Events per run</span><input type="number" id="sg-ev" value="500" min="50" step="50"></label>
+            <label class="field"><span>Active-learning rounds</span><input type="number" id="sg-r" value="2" min="0" max="20"></label>
+            <label class="field"><span>Runs per round</span><input type="number" id="sg-pr" value="12" min="1" max="128"></label>
+          </div>
+          <label class="field"><span>Traced events per run, kept for the 3D trajectory library (0 = none)</span><input type="number" id="sg-tj" value="30" min="0" max="200"></label>
+          <label class="tg"><span>Keep the run folders (uses disk)</span><span class="switch"><input type="checkbox" id="sg-keep"><i></i></span></label>
+          <p class="muted small" id="sg-est"></p>
+          <p class="muted small">Baseline = your current Magnets, Electrodes and Simulate (degrader &amp; catching) settings. Only the knobs vary.</p>
+          <button class="btn primary wide big" id="sg-go">Train surrogate</button>
+          <p class="err" id="sg-err"></p>
+        </div>
+        <div class="stack">
+          <div class="card"><h3>Surrogates</h3><div id="sg-list" class="list"></div></div>
+          <div class="card" id="sg-live" hidden>
+            <div class="card-head"><h3>Live prediction <span class="muted small" id="sg-live-name"></span></h3><span class="pill" id="sg-outside" hidden>outside training range</span></div>
+            <p class="muted small">Uses your current settings and updates as you move sliders on the Magnets, Electrodes and Simulate pages.</p>
+            <div class="tiles" id="sg-tiles"></div>
+            <div class="seg" id="sg-out"></div>
+            <div id="pl-sg-scan" class="plot sm2"></div>
+            <div id="pl-sg-z" class="plot sm"></div>
+          </div>
+          <div class="card" id="sg-tj-card" hidden>
+            <div class="card-head"><h3>Trajectories</h3><div class="row" style="margin:0"><button class="btn small" id="sg-tj-build" hidden>Build trajectory library</button><button class="btn small" id="sg-tj-open">Open in Event Display</button></div></div>
+            <p class="muted small" id="sg-tj-info"></p>
+            <div id="sg-tj-prog" hidden></div>
+            <div id="sg-tj-wrap">
+              <div class="row small" style="margin-top:0"><span>Neighbour</span><select id="sg-tj-pick" style="flex:1;min-width:0"></select></div>
+              <div class="viewport mini" id="sg-viewport">
+                <div class="glass mini-bar">
+                  <button class="btn icon" id="sg-tj-prev">‹</button><span id="sg-tj-ev" class="mini-ev"></span><button class="btn icon" id="sg-tj-next">›</button>
+                  <button class="play small" id="sg-tj-play"><svg viewBox="0 0 24 24"><path d="M7 4v16l13-8z"/></svg></button>
+                  <input type="range" id="sg-tj-time" min="0" max="1000" value="1000"><span class="tread" id="sg-tj-t"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card" id="sg-opt-card" hidden>
+            <h3>Optimise</h3>
+            <div class="row"><select id="sg-opt-out"></select><div class="seg" id="sg-opt-dir" style="margin:0"><button data-v="1" class="on">Maximise</button><button data-v="0">Minimise</button></div><button class="btn primary" id="sg-opt-go">Find best settings</button></div>
+            <div id="sg-opt-res"></div>
+          </div>
+          <div class="card" id="sg-q-card" hidden>
+            <h3>Model quality</h3>
+            <div class="grid2" style="margin-bottom:0"><div id="pl-sg-loo" class="plot sm2"></div><div id="pl-sg-rel" class="plot sm2"></div></div>
+            <div id="sg-verify"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- EVENT DISPLAY -->
+    <section class="page" id="page-display">
+      <div class="viewport" id="viewport">
+        <div class="glass hud-left">
+          <div class="hud-title">Event Display</div>
+          <select id="d-run"></select>
+          <div class="ev-row"><button class="btn icon" id="d-prev">‹</button><select id="d-event"></select><button class="btn icon" id="d-next">›</button></div>
+          <button class="btn small wide" id="d-nextann">Next event with annihilation</button>
+          <div class="hud-stats" id="d-stats"></div>
+        </div>
+        <div class="glass hud-right">
+          <div class="hud-sub">Particles</div>
+          <div id="d-species" class="species"></div>
+          <div class="hud-sub">Layers</div>
+          <label class="tg"><span>Transfer line</span><span class="switch"><input type="checkbox" data-layer="line" checked><i></i></span></label>
+          <label class="tg"><span>Field lines</span><span class="switch"><input type="checkbox" data-layer="field" checked><i></i></span></label>
+          <label class="tg master"><span>Field overlays <em>F</em></span><span class="switch"><input type="checkbox" id="d-overlays" checked><i></i></span></label>
+          <label class="tg sub"><span>|B| field map</span><span class="switch"><input type="checkbox" data-layer="bmap" checked><i></i></span></label>
+          <label class="tg sub"><span>Potential Φ(z)</span><span class="switch"><input type="checkbox" data-layer="pot" checked><i></i></span></label>
+          <label class="tg"><span>Electrodes</span><span class="switch"><input type="checkbox" data-layer="electrodes" checked><i></i></span></label>
+          <label class="tg"><span>Magnet coils</span><span class="switch"><input type="checkbox" data-layer="coils" checked><i></i></span></label>
+          <label class="tg"><span>Scintillators</span><span class="switch"><input type="checkbox" data-layer="scint" checked><i></i></span></label>
+          <label class="tg"><span>Vertices &amp; hits</span><span class="switch"><input type="checkbox" data-layer="marks" checked><i></i></span></label>
+          <label class="tg"><span>Labels</span><span class="switch"><input type="checkbox" data-layer="labels" checked><i></i></span></label>
+          <label class="tg"><span>Cutaway</span><span class="switch"><input type="checkbox" id="d-cut" checked><i></i></span></label>
+          <label class="tg"><span>Colour by voltage</span><span class="switch"><input type="checkbox" id="d-volt"><i></i></span></label>
+          <div class="hud-sub">Radial zoom <b id="d-radv">1×</b></div>
+          <input type="range" id="d-rad" min="1" max="12" step="0.5" value="1">
+        </div>
+        <div class="glass hud-views">
+          <button data-view="line">Transfer line</button><button data-view="iso">Iso</button><button data-view="side">Side</button><button data-view="top">Top</button><button data-view="end">Beam's eye</button><button data-view="trap">Trap</button>
+        </div>
+        <div class="glass hud-info" id="d-info" hidden></div>
+        <div class="glass cbars" id="d-cbars" hidden>
+          <div class="cb" id="cb-B"><div class="cb-t">|B| <span>T · contours 0.5 T</span></div><div class="cb-bar turbo"></div><div class="cb-l"><span id="cb-B0">0</span><span id="cb-B1"></span></div></div>
+          <div class="cb" id="cb-V"><div class="cb-t">Φ(z) on axis <span>drawn below the bore</span></div><div class="cb-line"><i></i><span id="cb-V0"></span></div></div>
+          <div class="cb-s" id="cb-src"></div>
+        </div>
+        <div class="glass caption" id="d-caption" hidden><div class="cap-k" id="d-cap-k"></div><div class="cap-t" id="d-cap-t"></div><div class="cap-s" id="d-cap-s"></div></div>
+        <div class="glass chapters" id="d-chapters" hidden></div>
+        <div class="glass timeline">
+          <div class="seg mini" id="d-mode"><button data-v="story">✦ Story</button><button data-v="tracks" class="on">Tracks</button></div>
+          <button class="play" id="d-play" title="Play (space)"><svg viewBox="0 0 24 24"><path d="M7 4v16l13-8z"/></svg></button>
+          <input type="range" id="d-time" min="0" max="1000" value="1000">
+          <div class="tread" id="d-tread">t = — ns</div>
+          <button class="btn icon gifbtn" id="d-gif" title="Save as GIF">GIF ⤓</button>
+          <div class="seg mini" id="d-speed"><button data-v="0.5">½×</button><button data-v="1" class="on">1×</button><button data-v="2">2×</button></div>
+        </div>
+        <div class="glass gifsheet" id="d-gifsheet" hidden>
+          <div class="hud-title">Save as GIF</div>
+          <div class="gs-row"><span>Content</span><div class="seg mini" id="g-mode"><button data-v="story" class="on">Full story</button><button data-v="tracks">Tracks only</button></div></div>
+          <div class="gs-row"><span>Width</span><div class="seg mini" id="g-w"><button data-v="640">640</button><button data-v="960" class="on">960</button><button data-v="1280">1280</button></div></div>
+          <div class="gs-row"><span>Frame rate</span><div class="seg mini" id="g-fps"><button data-v="10">10</button><button data-v="15" class="on">15</button><button data-v="20">20</button></div></div>
+          <div class="gs-row"><span>Length</span><div class="seg mini" id="g-len"><button data-v="0.5">Short</button><button data-v="1" class="on">Normal</button><button data-v="1.6">Long</button></div></div>
+          <label class="tg"><span>Labels</span><span class="switch"><input type="checkbox" id="g-labels" checked><i></i></span></label>
+          <label class="tg"><span>Captions</span><span class="switch"><input type="checkbox" id="g-caps" checked><i></i></span></label>
+          <p class="gs-est" id="g-est"></p>
+          <div class="gs-prog" hidden id="g-prog"><div class="progress"><i id="g-bar"></i></div><span id="g-stat"></span></div>
+          <div class="ev-row"><button class="btn wide" id="g-cancel">Cancel</button><button class="btn primary wide" id="g-go">Record</button></div>
+        </div>
+        <div class="empty" id="d-empty" hidden>
+          <div class="empty-card glass"><b>No trajectories recorded for this run</b><p>Start a run from <a data-go="simulate">Simulate</a> with “Record trajectories” &gt; 0. Runs from the command line can add <code>traceEvents=100</code>.</p></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+<div class="sheet-bg" id="sheet" hidden><div class="sheet"><h3 id="sheet-t"></h3><p class="muted" id="sheet-m"></p><div class="sheet-x" id="sheet-x"></div>
+  <div class="row" style="justify-content:flex-end"><button class="btn" id="sheet-no">Cancel</button><button class="btn danger-fill" id="sheet-yes">Delete</button></div></div></div>
+<script src="static.js"></script>
+<script src="app.js"></script>
+<script type="module">import { EventDisplay, SPECIES, PDG_NAME, STORY } from "./viewer3d.js"; window.TwinViewer = { EventDisplay, SPECIES, PDG_NAME, STORY }; window.dispatchEvent(new Event("viewer-ready"));</script>
+</body>
+</html>
