@@ -30,6 +30,9 @@ export const STORY = [
 const GROUP_COL = { C: "#8e9aaf", HV: "#e0b24a", P: "#5ac8a8", T: "#4fb3d9", B: "#5e8fff", A: "#b07cf0" };
 
 const toScene = (x, y, z) => [z, y, x];
+const CRYO_COL = { LHe: "#5ac8fa", LN2: "#7d7aff" };
+// area of a disc of radius R lying below the horizontal line y = h
+const discBelow = (R, h) => (h <= -R ? 0 : h >= R ? Math.PI * R * R : R * R * Math.acos(-h / R) + h * Math.sqrt(R * R - h * h));
 
 function tubeGeom(ri, ro, z0, z1, phi0 = 0, phi1 = 360, seg = 48) {
   const s = new THREE.Shape();
@@ -86,6 +89,7 @@ export class EventDisplay {
   constructor(host, hooks = {}) {
     this.host = host; this.hooks = hooks;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    this.renderer.localClippingEnabled = true; this.cryo = {}; this.cryoFill = {};
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     host.appendChild(this.renderer.domElement);
@@ -99,7 +103,7 @@ export class EventDisplay {
     this.controls = new OrbitControls(this.camera, this.labels.domElement);
     this.controls.enableDamping = true; this.controls.dampingFactor = 0.08;
     this.world = new THREE.Group(); this.scene.add(this.world);
-    this.layers = { line: new THREE.Group(), field: new THREE.Group(), bmap: new THREE.Group(), pot: new THREE.Group(), bunch: new THREE.Group(), electrodes: new THREE.Group(), coils: new THREE.Group(), scint: new THREE.Group(), labels: new THREE.Group(), tracks: new THREE.Group(), marks: new THREE.Group(), axis: new THREE.Group() };
+    this.layers = { line: new THREE.Group(), field: new THREE.Group(), bmap: new THREE.Group(), pot: new THREE.Group(), bunch: new THREE.Group(), electrodes: new THREE.Group(), coils: new THREE.Group(), cryo: new THREE.Group(), ovc: new THREE.Group(), scint: new THREE.Group(), labels: new THREE.Group(), tracks: new THREE.Group(), marks: new THREE.Group(), axis: new THREE.Group() };
     Object.values(this.layers).forEach((g) => this.world.add(g));
     this.opts = { cutaway: true, colorByVoltage: false, radial: 1 };
     this.time = { u: 1, playing: false, speed: 1, duration: 9, sorted: [0, 1] };
@@ -134,7 +138,8 @@ export class EventDisplay {
   setVoltages(v) { this.voltages = v || {}; this.recolorElectrodes(); }
   buildGeometry() {
     const geo = this.geo; if (!geo) return;
-    for (const k of ["electrodes", "coils", "scint", "labels", "axis"]) this.layers[k].clear();
+    for (const k of ["electrodes", "coils", "cryo", "ovc", "scint", "labels", "axis"]) this.layers[k].clear();
+    this.cryo = {};
     const cut = this.opts.cutaway ? [90, 270] : [0, 360];
     this.elMeshes = [];
     for (const e of geo.electrodes) {
@@ -147,6 +152,48 @@ export class EventDisplay {
       const m = new THREE.Mesh(tubeGeom(c.ri, c.ro, c.z0, Math.max(c.z1, c.z0 + 3), ...cut, 64),
         new THREE.MeshStandardMaterial({ color: c.main ? "#d9884f" : "#c06a3a", metalness: 0.6, roughness: 0.4, transparent: true, opacity: c.main ? 0.13 : 0.22, side: THREE.DoubleSide, depthWrite: false }));
       m.userData = { kind: "coil", ...c }; this.layers.coils.add(m);
+    }
+    // cryogen vessels: stainless skin + the liquid inside (LHe bath around the coils, LN2 jacket in the bore)
+    for (const v of geo.cryo || []) {
+      const col = CRYO_COL[v.cryogen] || "#8e8e93", w = v.wall;
+      const mli = new THREE.MeshStandardMaterial({ color: "#d4a94a", metalness: 0.95, roughness: 0.45, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false });
+      const plane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 1e6);   // keeps y <= level: the liquid settles under gravity
+      const liquid = new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.35, metalness: 0, roughness: 0.15, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false, clippingPlanes: [plane] });
+      const surfMat = new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.6, metalness: 0, roughness: 0.1, transparent: true, opacity: 0.38, side: THREE.DoubleSide, depthWrite: false });
+      const surf = new THREE.Group(); surf.userData = { kind: "cryo", ...v }; this.layers.cryo.add(surf);
+      const steel = new THREE.MeshStandardMaterial({ color: "#c7c7cc", metalness: 0.9, roughness: 0.3, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false });
+      v.segments.forEach((g, i) => {
+        const last = i === v.segments.length - 1, first = i === 0;
+        const parts = [[liquid, g.ri + w, g.ro - w, g.z0 + (first ? w : 0), g.z1 - (last ? w : 0)],
+          [steel, g.ro - w, g.ro, g.z0, g.z1], [steel, g.ri, g.ri + w, g.z0, g.z1]];
+        if (v.mli) parts.push([mli, g.ro, g.ro + v.mli, g.z0, g.z1]);
+        if (first) parts.push([steel, g.ri, g.ro, g.z0, g.z0 + w]);
+        if (last) parts.push([steel, g.ri, g.ro, g.z1 - w, g.z1]);
+        const prev = v.segments[i - 1];
+        if (prev && prev.ro !== g.ro) parts.push([steel, Math.min(prev.ro, g.ro) - w, Math.max(prev.ro, g.ro), g.z0 - w / 2, g.z0 + w / 2]);
+        for (const [mat, ri, ro, z0, z1] of parts) {
+          const m = new THREE.Mesh(tubeGeom(ri, ro, z0, z1, ...cut, 64), mat);
+          m.userData = { kind: "cryo", ...v }; this.layers.cryo.add(m);
+        }
+      });
+      const s0 = v.segments[0], zEnd = v.segments[v.segments.length - 1].z1;
+      const lbl = this.addLabel("",
+        toScene(0, -(s0.ro + (v.mli || 0) + 26), (s0.z0 + zEnd) / 2 + (v.cryogen === "LHe" ? 0 : 250)), `lbl cryo ${v.cryogen.toLowerCase()}`);
+      this.cryo[v.id] = { v, plane, surf, surfMat, lbl, cap: this.cryoLitres(v, Infinity) };
+      this.setCryoFill(v.id, this.cryoFill[v.id] ?? 1);
+    }
+    // outer vacuum vessel: cylindrical cans joined by flanges, end plates with beam apertures
+    if (geo.ovc) {
+      const o = geo.ovc, ri = o.ro - o.wall, [fdr, fdz] = o.flange;
+      const skin = new THREE.MeshStandardMaterial({ color: "#aeb4bc", metalness: 0.85, roughness: 0.35, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false });
+      const rim = new THREE.MeshStandardMaterial({ color: "#d1d5db", metalness: 0.9, roughness: 0.25, transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false });
+      const parts = [[skin, ri, o.ro, o.z0, o.z1], [rim, o.apertures[0], o.ro + fdr, o.z0, o.z0 + o.end], [rim, o.apertures[1], o.ro + fdr, o.z1 - o.end, o.z1]];
+      o.cans.slice(1).forEach((c) => parts.push([rim, o.ro, o.ro + fdr, c.z0 - fdz, c.z0 + fdz]));
+      for (const [mat, a, b, z0, z1] of parts) {
+        const m = new THREE.Mesh(tubeGeom(a, b, z0, z1, ...cut, 96), mat);
+        m.userData = { kind: "ovc", ...o }; this.layers.ovc.add(m);
+      }
+      this.addLabel("Outer vacuum vessel · 293 K · ~1e-7 mbar", toScene(0, -(o.ro + 60), (o.z0 + o.z1) / 2), "lbl ovc");
     }
     this.scMeshes = {};
     for (const s of geo.scintillators) {
@@ -181,6 +228,47 @@ export class EventDisplay {
     this.buildTransferLine();
     this.setStory(this.story.u, true);
   }
+  /* ---------------- cryogen fill levels ---------------- */
+  // litres of liquid below height h (liquid space inside the walls, minus the coils standing in the bath)
+  cryoLitres(v, h) {
+    const w = v.wall; let mm3 = 0;
+    for (const g of v.segments) {
+      const z0 = g.z0 + w, z1 = g.z1 - w, ri = g.ri + w, ro = g.ro - w;
+      mm3 += (z1 - z0) * (discBelow(ro, h) - discBelow(ri, h));
+      if (v.cryogen === "LHe") for (const c of this.geo.coils) {
+        const a = Math.max(c.z0, z0), b = Math.min(c.z1, z1), r0 = Math.max(c.ri, ri), r1 = Math.min(c.ro, ro);
+        if (b > a && r1 > r0) mm3 -= (b - a) * (discBelow(r1, h) - discBelow(r0, h));
+      }
+    }
+    return mm3 * 1e-6;
+  }
+  placeCryoPlane(c) { c.plane.constant = Number.isFinite(c.h) ? c.h * this.opts.radial : c.h > 0 ? 1e6 : -1e6; }
+  // f = fill fraction 0..1 -> liquid level, clip plane, free-surface strips and label; returns the state
+  setCryoFill(id, f) {
+    const c = this.cryo[id]; if (!c) return null;
+    f = Math.min(1, Math.max(0, f)); this.cryoFill[id] = f;
+    const v = c.v, w = v.wall, R = Math.max(...v.segments.map((g) => g.ro));
+    if (f >= 0.999) c.h = Infinity; else if (f <= 0.001) c.h = -Infinity;
+    else { let lo = -R, hi = R; for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; (this.cryoLitres(v, m) < f * c.cap ? (lo = m) : (hi = m)); } c.h = (lo + hi) / 2; }
+    c.litres = f * c.cap; this.placeCryoPlane(c);
+    // free surface: the horizontal cut through the annulus at y = h (only the kept half in cutaway)
+    c.surf.children.forEach((m) => m.geometry.dispose()); c.surf.clear();
+    if (Number.isFinite(c.h)) for (const g of v.segments) {
+      const ri = g.ri + w, ro = g.ro - w, h = c.h; if (Math.abs(h) >= ro) continue;
+      const a = Math.sqrt(ro * ro - h * h), b = Math.abs(h) < ri ? Math.sqrt(ri * ri - h * h) : 0;
+      let strips = b ? [[-a, -b], [b, a]] : [[-a, a]];
+      if (this.opts.cutaway) strips = strips.map(([x0, x1]) => [x0, Math.min(x1, 0)]).filter(([x0, x1]) => x1 > x0);
+      for (const [x0, x1] of strips) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute([g.z0 + w, h, x0, g.z1 - w, h, x0, g.z1 - w, h, x1, g.z0 + w, h, x1], 3));
+        geo.setIndex([0, 1, 2, 0, 2, 3]); geo.computeVertexNormals();
+        const m = new THREE.Mesh(geo, c.surfMat); m.userData = c.surf.userData; c.surf.add(m);
+      }
+    }
+    c.lbl.element.textContent = `${v.cryogen === "LHe" ? "LHe" : "LN₂"} ${v.T} K · ${Math.round(c.litres)} / ${Math.round(c.cap)} L`;
+    return this.cryoState(id);
+  }
+  cryoState(id) { const c = this.cryo[id]; return c && { id, fill: this.cryoFill[id] ?? 1, litres: c.litres, capacity: c.cap, level: c.h }; }
   addLabel(text, pos, cls) {
     const el = document.createElement("div"); el.className = cls; el.textContent = text;
     const o = new CSS2DObject(el); o.position.set(...pos); this.layers.labels.add(o); return o;
@@ -203,7 +291,7 @@ export class EventDisplay {
     if (k === "colorByVoltage") this.recolorElectrodes();
     if (k === "radial") this.applyRadial();
   }
-  applyRadial() { const k = this.opts.radial; this.world.scale.set(1, k, k); }
+  applyRadial() { const k = this.opts.radial; this.world.scale.set(1, k, k); Object.values(this.cryo).forEach((c) => this.placeCryoPlane(c)); }
   setLayer(k, on) { this.layers[k].visible = on;  if (k === "labels") this.labels.domElement.classList.toggle("hide-labels", !on); }
 
   /* ---------------- tracks ---------------- */
@@ -641,7 +729,7 @@ export class EventDisplay {
       const info = this.trackInfo[o.userData.seg[Math.floor(vi / 2)]];
       return this.hooks.onPick?.({ type: "track", ...info, species: this.species[info.si] });
     }
-    const hm = this.raycaster.intersectObjects([...this.layers.electrodes.children, ...this.layers.scint.children], false)[0];
+    const hm = this.raycaster.intersectObjects([...this.layers.electrodes.children, ...this.layers.scint.children, ...(this.layers.cryo.visible ? this.layers.cryo.children : []), ...(this.layers.ovc.visible ? this.layers.ovc.children : [])], true)[0];
     if (hm?.object.userData.kind) return this.hooks.onPick?.({ type: hm.object.userData.kind, ...hm.object.userData, V: this.voltages[hm.object.userData.id] });
     this.hooks.onPick?.(null);
   }

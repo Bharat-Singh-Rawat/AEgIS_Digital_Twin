@@ -844,7 +844,9 @@ async function initDisplay() {
       onPick: showPick,
     });
     D.geo = await api("/api/geometry");
+    D.viewer.cryoFill = store.get("cryoFill", {});
     D.viewer.setGeometry(D.geo, {});
+    buildCryoUI();
     $("#d-time").addEventListener("input", (e) => {
       if (D.viewer.story.on) { D.viewer.storyPlay(false); D.viewer.story.auto = true; D.viewer.setStory(e.target.value / 1000); }
       else { D.viewer.play(false); D.viewer.setU(e.target.value / 1000); }
@@ -986,7 +988,47 @@ function displayStats() {
   $("#d-stats").innerHTML = [["Events", ev < 0 ? D.events.length : 1], ["Tracks", tr.length], ["Annihilations", nAnn], ["π± produced", nPi], ["Scint. hits", nHit],
     nTrap != null ? ["Trapped p̄", nTrap] : ["Magnets", d.params?.magnetModel === 0 ? "analytic" : "CST ROM"]].map(([l, v]) => `<div><div class="l">${l}</div><div class="v">${v}</div></div>`).join("");
 }
+/* ---------------- cryogen fill levels ---------------- */
+const CRYO_USE = { LHe: 150, LN2: 5 };     // L/day in operation, Derking et al. 2014
+function buildCryoUI() {
+  const box = $("#d-cryo"), vs = D.geo?.cryo || [];
+  if (!vs.length) { box.hidden = true; return; }
+  const col = { LHe: "#5ac8fa", LN2: "#7d7aff" };
+  box.innerHTML = vs.map((v) => `<div class="cr-row"><span><i style="background:${col[v.cryogen]}"></i>${v.cryogen === "LHe" ? "LHe" : "LN₂"} · ${v.magnet}</span><b id="cr-v-${v.id}"></b></div>
+      <input type="range" min="0" max="100" step="1" data-cryo="${v.id}" style="--c:${col[v.cryogen]}">`).join("") +
+    `<div class="cr-sum" id="cr-sum"></div><div class="cr-btns"><button class="btn small" id="cr-fill">Fill all</button><button class="btn small" id="cr-day">+1 day boil-off</button></div>`;
+  const set = (id, f) => { D.viewer.setCryoFill(id, f); };
+  box.querySelectorAll("[data-cryo]").forEach((r) => r.addEventListener("input", () => { set(r.dataset.cryo, r.value / 100); cryoSync(); }));
+  $("#cr-fill").onclick = () => { vs.forEach((v) => set(v.id, 1)); cryoSync(); };
+  // one day of operation: the published consumption, shared between the vessels of a cryogen by their capacity
+  $("#cr-day").onclick = () => {
+    for (const k of ["LHe", "LN2"]) {
+      const g = vs.filter((v) => v.cryogen === k), cap = g.reduce((a, v) => a + D.viewer.cryoState(v.id).capacity, 0);
+      g.forEach((v) => { const st = D.viewer.cryoState(v.id); set(v.id, (st.litres - CRYO_USE[k] * st.capacity / cap) / st.capacity); });
+    }
+    cryoSync();
+  };
+  $('[data-layer="cryo"]').addEventListener("change", (e) => (box.hidden = !e.target.checked));
+  box.hidden = !$('[data-layer="cryo"]').checked;
+  cryoSync();
+}
+function cryoSync() {
+  const vs = D.geo?.cryo || []; const fill = {};
+  vs.forEach((v) => {
+    const st = D.viewer.cryoState(v.id); if (!st) return; fill[v.id] = st.fill;
+    const r = $(`[data-cryo="${v.id}"]`); r.value = Math.round(st.fill * 100); r.style.setProperty("--p", st.fill * 100 + "%");
+    $(`#cr-v-${v.id}`).textContent = `${Math.round(st.litres)} / ${Math.round(st.capacity)} L`;
+  });
+  store.set("cryoFill", fill);
+  $("#cr-sum").innerHTML = ["LHe", "LN2"].map((k) => {
+    const g = vs.map((v) => v.cryogen === k && D.viewer.cryoState(v.id)).filter(Boolean);
+    const L = g.reduce((a, s) => a + s.litres, 0), h = (24 * L) / CRYO_USE[k];
+    return `${k === "LHe" ? "LHe" : "LN₂"} ${Math.round(L)} L · lasts ≈ ${h >= 48 ? (h / 24).toFixed(1) + " days" : h.toFixed(0) + " h"} at ${CRYO_USE[k]} L/day`;
+  }).join("<br>");
+  if (D.pick?.type === "cryo") showPick(D.pick);
+}
 function showPick(p) {
+  D.pick = p;
   const box = $("#d-info");
   if (!p) { box.hidden = true; return; }
   const { PDG_NAME } = window.TwinViewer;
@@ -1002,6 +1044,24 @@ function showPick(p) {
       <div class="row"><button class="btn small" id="pk-ev">Show event ${p.ev}</button><button class="btn small" id="pk-focus">Focus start</button></div>`;
   } else if (p.type === "electrode") {
     html = `<h4>Electrode ${p.id}</h4><dl><dt>Group</dt><dd>${p.group}</dd><dt>z (CST)</dt><dd>${p.z0.toFixed(1)} … ${p.z1.toFixed(1)} mm</dd><dt>Radius</dt><dd>${p.ri} – ${p.ro} mm</dd><dt>Voltage (run)</dt><dd>${p.V ?? 0} V</dd></dl>`;
+  } else if (p.type === "cryo") {
+    const g = p.segments, ri = Math.min(...g.map((x) => x.ri)), ro = Math.max(...g.map((x) => x.ro));
+    html = `<h4><i style="background:${p.cryogen === "LHe" ? "#5ac8fa" : "#7d7aff"}"></i>${p.name}</h4><dl>
+      <dt>Temperature</dt><dd>${p.T} K</dd>${(() => { const st = D.viewer?.cryoState(p.id) || { litres: p.litres, capacity: p.litres, fill: 1, level: Infinity };
+        return `<dt>Liquid</dt><dd>${st.litres.toFixed(1)} of ${st.capacity.toFixed(1)} L (${(st.litres * p.mass_kg / p.litres).toFixed(1)} kg)</dd>
+        <dt>Fill / level</dt><dd>${Math.round(st.fill * 100)} %${Number.isFinite(st.level) ? ` · surface at y = ${st.level.toFixed(0)} mm` : st.fill >= 0.999 ? " · full" : " · empty"}</dd>`; })()}
+      ${p.coil_litres ? `<dt>Displaced by coils</dt><dd>${p.coil_litres} L</dd>` : ""}
+      <dt>z (CST)</dt><dd>${g[0].z0.toFixed(0)} … ${g[g.length - 1].z1.toFixed(0)} mm</dd><dt>Radius</dt><dd>${ri} – ${ro} mm (wall ${p.wall} mm)</dd>
+      <dt>Role</dt><dd>${p.role}</dd></dl>
+      <p class="muted" style="font-size:11px;margin:6px 0 0">Nesting (LHe → LN₂ shield → MLI → OVC), bores and consumption are published (Volponi 2024, Huck 2025, Dudarev 2012, Derking 2014);
+      wall radii are sized so LHe lasts ~2 days and LN₂ ~3 months at that consumption (no drawing published).</p>`;
+  } else if (p.type === "ovc") {
+    html = `<h4><i style="background:#aeb4bc"></i>${p.name}</h4><dl>
+      <dt>Outer radius</dt><dd>${p.ro} mm (wall ${p.wall} mm)</dd><dt>z (CST)</dt><dd>${p.z0} … ${p.z1} mm</dd>
+      <dt>Sections</dt><dd>${p.cans.map((c) => c.name).join(" · ")}</dd>
+      <dt>Insulating vacuum</dt><dd>≈ ${(p.vacuum_litres / 1000).toFixed(2)} m³ at ~1e-7 mbar</dd>
+      <dt>Beam apertures</dt><dd>Ø${2 * p.apertures[0]} / Ø${2 * p.apertures[1]} mm</dd><dt>Role</dt><dd>${p.role}</dd></dl>
+      <p class="muted" style="font-size:11px;margin:6px 0 0">Layout and the ~70 cm scintillator radius are from the Volponi (2024) and Huck (2025) theses; the length, wall and flanges are estimates.</p>`;
   } else if (p.type === "scintillator") {
     const n = D.data?.hits?.filter((h) => h[0] === p.id && (D.viewer.event < 0 || h[5] === D.viewer.event)).length ?? 0;
     html = `<h4>Scintillator ${p.id}</h4><dl><dt>z (CST)</dt><dd>${p.z0.toFixed(0)} … ${p.z1.toFixed(0)} mm</dd><dt>Radius</dt><dd>${p.ri} – ${p.ro} mm</dd><dt>φ</dt><dd>${p.phi0}° – ${p.phi1}°</dd><dt>Hits shown</dt><dd>${n}</dd></dl>`;
