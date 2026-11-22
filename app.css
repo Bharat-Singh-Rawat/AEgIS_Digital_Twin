@@ -349,3 +349,19 @@ input[type=file] { padding: 6px; font-size: 12px; }
 @keyframes qflash { 50% { box-shadow: 0 0 40px rgba(255,59,48,.7); } }
 .cryo-ctl .cr-warn { color: #ff9f0a; }
 .explainer, .qalert { z-index: 40; }
+
+/* webcam hand control */
+.handbtn { font-size: 15px; min-width: 34px; } .handbtn.on { background: rgba(100,210,255,.22) !important; color: #64d2ff; box-shadow: 0 0 14px rgba(100,210,255,.35); }
+.handpanel { left: 16px; bottom: 20px; width: 250px; padding: 10px; border-radius: 16px; z-index: 35; }
+.handpanel video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.handpanel canvas { display: block; width: 100%; aspect-ratio: 4 / 3; border-radius: 10px; background: #000; }
+.handpanel .x { position: absolute; top: 14px; right: 14px; z-index: 2; }
+.hp-status { margin: 7px 2px 5px; font-size: 13px; font-weight: 650; color: #64d2ff; }
+.hp-help { display: grid; grid-template-columns: 1fr; gap: 1px; font-size: 11.5px; color: rgba(235,235,245,.78); }
+.hp-priv { margin-top: 6px; font-size: 10px; color: rgba(235,235,245,.42); }
+.hp-cursor { position: absolute; width: 44px; height: 44px; margin: -22px 0 0 -22px; z-index: 36; pointer-events: none; transition: transform .06s linear; }
+.hp-cursor svg { width: 44px; height: 44px; transform: rotate(-90deg); }
+.hp-cursor .dot { fill: rgba(100,210,255,.35); stroke: #64d2ff; stroke-width: 2; }
+.hp-cursor .ring { fill: none; stroke: #ffd60a; stroke-width: 3.5; stroke-dasharray: 0 100; stroke-linecap: round; }
+.hp-cursor span { position: absolute; left: 48px; top: 12px; font: 650 12px var(--font); color: #fff; text-shadow: 0 1px 3px #000; white-space: nowrap; }
+.hp-cursor.pinch .dot { fill: #64d2ff; }

@@ -858,6 +858,8 @@ async function initDisplay() {
     $("#d-chapters").innerHTML = STORY.map((c, i) => `<button data-ch="${i}">${i + 1} · ${c.name}<span class="bar"></span></button>`).join("");
     $("#d-chapters").insertAdjacentHTML("beforeend", `<button class="explain${EX.on ? " on" : ""}" id="d-explain" title="Pause at each chapter with a short explanation">ⓘ Explain</button>`);
     $("#d-explain").addEventListener("click", () => { EX.on = !EX.on; store.set("explain", EX.on); $("#d-explain").classList.toggle("on", EX.on); if (!EX.on) $("#d-explainer").hidden = true; else EX.shown = -1; });
+    $("#d-hands").addEventListener("click", () => (HC.ctl ? handsOff() : handsOn()));
+    $("#hp-x").addEventListener("click", handsOff);
     $("#d-sound").classList.toggle("on", SND.on);
     $("#d-sound").addEventListener("click", () => { SND.on = !SND.on; store.set("sound", SND.on); $("#d-sound").classList.toggle("on", SND.on); if (SND.on) { sndInit(); sndNote(440, 0.25, 0, "triangle", 1.2); } });
     $$("#d-chapters [data-ch]").forEach((b) => b.addEventListener("click", () => {
@@ -1049,6 +1051,72 @@ function soundHits(hits, anns) {
     sndNote(f, g, Math.max(-0.85, Math.min(0.85, h[3] / 1100)), type, dur);
   });
   const b = $("#d-sound"); b.classList.remove("ping"); void b.offsetWidth; b.classList.add("ping");
+}
+
+/* ---------------- webcam hand control ---------------- */
+// gestures from twin/static/hands.js drive the 3D view; the camera image never leaves the browser
+const HC = { ctl: null };
+async function handsOn() {
+  const btn = $("#d-hands"), panel = $("#d-handpanel"), st = $("#hp-status");
+  if (!navigator.mediaDevices?.getUserMedia) { toast("This browser has no camera access (needs https or localhost)"); return; }
+  btn.classList.add("on"); panel.hidden = false; $("#d-cbars").style.visibility = "hidden";   // the camera panel sits where the legend is
+  try {
+    const { HandControl } = await import("./hands.js");
+    HC.ctl = new HandControl({ video: $("#hp-video"), canvas: $("#hp-cv"), emit: handEvent, onStatus: (t) => (st.textContent = t) });
+    await HC.ctl.start();
+  } catch (e) {
+    const msg = e?.name === "NotAllowedError" ? "Camera blocked: allow camera access for this page" : e?.name === "NotFoundError" ? "No camera found" : "Could not start: " + (e?.message || e);
+    st.textContent = msg; HC.ctl?.stop(); HC.ctl = null; btn.classList.remove("on");
+  }
+}
+function handsOff() {
+  HC.ctl?.stop(); HC.ctl = null;
+  $("#d-hands").classList.remove("on"); $("#d-handpanel").hidden = true; $("#hp-cursor").hidden = true; $("#d-cbars").style.visibility = "";
+}
+// camera coordinates (0..1, mirrored) -> viewport pixels; the middle 80 % of the image spans the whole view
+function handToView(x, y) {
+  const r = $("#viewport").getBoundingClientRect(), f = (v) => Math.min(1, Math.max(0, (v - 0.1) / 0.8));
+  return { left: f(x) * r.width, top: f(y) * r.height, clientX: r.left + f(x) * r.width, clientY: r.top + f(y) * r.height };
+}
+function handEvent(ev) {
+  const V = D.viewer; if (!V || S.page !== "display") return;
+  const cur = $("#hp-cursor");
+  if (ev.type === "status") { $("#hp-status").textContent = ev.text; return; }
+  if (ev.type === "cursor") {
+    cur.hidden = !ev.visible; if (!ev.visible) return;
+    const p = handToView(ev.x, ev.y); cur.style.left = p.left + "px"; cur.style.top = p.top + "px";
+    cur.classList.toggle("pinch", ev.pose === "pinch"); return;
+  }
+  if (ev.type === "rotate") {                     // orbit the camera around its target
+    const c = V.camera, t = V.controls.target, off = c.position.clone().sub(t);
+    const r = off.length(), th = Math.atan2(off.x, off.z) - ev.dx * 7, ph = Math.min(3.05, Math.max(0.1, Math.acos(off.y / r) - ev.dy * 5));
+    c.position.set(t.x + r * Math.sin(ph) * Math.sin(th), t.y + r * Math.cos(ph), t.z + r * Math.sin(ph) * Math.cos(th));
+    V.story.auto = false; V.controls.update(); return;
+  }
+  if (ev.type === "zoom") {
+    const c = V.camera, t = V.controls.target, off = c.position.clone().sub(t);
+    const r = Math.min(20000, Math.max(40, off.length() / Math.pow(ev.k, 1.6)));
+    c.position.copy(t).add(off.setLength(r)); V.story.auto = false; V.controls.update(); return;
+  }
+  if (ev.type === "time") {
+    if (V.story.on) { V.storyPlay(false); V.story.auto = true; V.setStory(ev.u); } else { V.play(false); V.setU(ev.u); }
+    return;
+  }
+  const ring = $(".ring", cur), lbl = $("#hp-cur-t");
+  const meaningful = (g) => g !== "open" || !!(QS.quenched || QS.timer);
+  if (ev.type === "hold") {
+    const on = ev.gesture && meaningful(ev.gesture);
+    ring.style.strokeDasharray = `${on ? ev.progress * 100 : 0} 100`;
+    lbl.textContent = on ? { point: "select…", fist: "quench 5 T…", thumbsup: "play / pause…", open: "reset…" }[ev.gesture] : "";
+    return;
+  }
+  if (ev.type === "fire") {
+    ring.style.strokeDasharray = "0 100"; lbl.textContent = "";
+    if (ev.gesture === "point") { const p = handToView(ev.x, ev.y); V.pick({ clientX: p.clientX, clientY: p.clientY }); }
+    else if (ev.gesture === "thumbsup") V.story.on ? V.storyPlay() : V.play();
+    else if (ev.gesture === "fist" && D.geo?.magnets?.length) quenchMagnet("5T");
+    else if (ev.gesture === "open" && meaningful("open")) resetScenario();
+  }
 }
 
 /* ---------------- explainer cards (story mode) ---------------- */

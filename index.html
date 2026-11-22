@@ -356,12 +356,21 @@ np.savez("lne02_end.npz", x=p.x, px=p.px, y=p.y, py=p.py,
         <div class="glass chapters" id="d-chapters" hidden></div>
         <div class="glass explainer" id="d-explainer" hidden></div>
         <div class="glass qalert" id="d-qalert" hidden></div>
+        <div class="hp-cursor" id="hp-cursor" hidden><svg viewBox="0 0 44 44"><circle cx="22" cy="22" r="9" class="dot"/><circle cx="22" cy="22" r="18" class="ring" pathLength="100"/></svg><span id="hp-cur-t"></span></div>
+        <div class="glass handpanel" id="d-handpanel" hidden>
+          <button class="x" id="hp-x" title="Turn hand control off">✕</button>
+          <video id="hp-video" playsinline muted></video><canvas id="hp-cv"></canvas>
+          <div class="hp-status" id="hp-status">Starting…</div>
+          <div class="hp-help"><span>🤏 pinch + move · rotate</span><span>🤏🤏 two pinches · zoom</span><span>✌️ move sideways · time</span><span>👉 hold · select a part</span><span>👍 hold · play / pause</span><span>✊ hold · quench 5 T</span><span>✋ hold · reset</span></div>
+          <div class="hp-priv">Camera processed on this computer only. Nothing is recorded or uploaded.</div>
+        </div>
         <div class="glass timeline">
           <div class="seg mini" id="d-mode"><button data-v="story">✦ Story</button><button data-v="tracks" class="on">Tracks</button></div>
           <button class="play" id="d-play" title="Play (space)"><svg viewBox="0 0 24 24"><path d="M7 4v16l13-8z"/></svg></button>
           <input type="range" id="d-time" min="0" max="1000" value="1000">
           <div class="tread" id="d-tread">t = — ns</div>
           <button class="btn icon gifbtn sndbtn" id="d-sound" title="Annihilation sound: every detector hit plays a note">♪</button>
+          <button class="btn icon gifbtn handbtn" id="d-hands" title="Hand control with your webcam (processed on this computer, nothing is uploaded)">✋</button>
           <button class="btn icon gifbtn" id="d-gif" title="Save as GIF">GIF ⤓</button>
           <div class="seg mini" id="d-speed"><button data-v="0.5">½×</button><button data-v="1" class="on">1×</button><button data-v="2">2×</button></div>
         </div>
