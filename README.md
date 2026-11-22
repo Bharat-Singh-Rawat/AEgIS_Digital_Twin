@@ -1,5 +1,14 @@
 # AEgIS Digital Twin: interactive showcase
 
+<p align="center">
+  <img src="media/story.gif" width="640" alt="Story mode of the AEgIS digital twin Event Display"><br>
+  <em>Story mode: p̄ transfer line, 5 T / 1 T solenoids with field lines and |B| map, electrode potentials, transport and annihilation.</em>
+</p>
+<p align="center">
+  <img src="media/positron_line.gif" width="640" alt="Positron line from the 22Na source to the 5 T magnet"><br>
+  <em>Positron line: Geant4 e⁺ from the ²²Na source and solid-neon moderator into the buffer-gas trap, then the bunch from the accumulator down the guide solenoid into the 5 T line.</em>
+</p>
+
 **Live:** https://bharat-singh-rawat.github.io/AEgIS_Digital_Twin/
 
 A read-only, in-browser showcase of the AEgIS Penning–Malmberg trap digital twin. It shows G4beamline 3.08
