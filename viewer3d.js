@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { OrbitControls } from "./vendor/OrbitControls.js";
 import { RoomEnvironment } from "./vendor/RoomEnvironment.js";
 import { CSS2DRenderer, CSS2DObject } from "./vendor/CSS2DRenderer.js";
+import { HbarModel } from "./hbar.js";
 
 export const SPECIES = [
   { key: "pbar", label: "p̄", name: "antiproton", match: (p) => p === -2212, color: "#ff375f", op: 1.0, on: true },
@@ -15,17 +16,21 @@ export const SPECIES = [
   { key: "mu", label: "μ±", name: "muons", match: (p) => Math.abs(p) === 13, color: "#30d158", op: 0.95, on: true },
   { key: "p", label: "p", name: "protons", match: (p) => p === 2212, color: "#ff6961", op: 0.9, on: true },
   { key: "n", label: "n", name: "neutrons", match: (p) => p === 2112, color: "#aeaeb2", op: 0.25, on: false },
+  { key: "ps", label: "Ps", name: "positronium (Geant4 H̄ runs)", match: (p) => p === 9000011, color: "#5ac8fa", op: 0.55, on: true },
+  { key: "hbar", label: "H̄", name: "antihydrogen (Geant4 H̄ runs)", match: (p) => p === -9001001, color: "#ffd60a", op: 1.0, on: true },
   { key: "A", label: "A", name: "nuclear fragments", match: (p) => p > 1e9, color: "#ffffff", op: 0.9, on: true },
   { key: "nu", label: "ν", name: "neutrinos", match: (p) => [12, -12, 14, -14, 16, -16].includes(p), color: "#5e5ce6", op: 0.2, on: false },
   { key: "x", label: "…", name: "other", match: () => true, color: "#8e8e93", op: 0.5, on: true },
 ];
 export const PDG_NAME = { "-2212": "antiproton", 2212: "proton", 2112: "neutron", 22: "photon", 11: "electron", "-11": "positron",
-  211: "π⁺", "-211": "π⁻", 111: "π⁰", 13: "μ⁻", "-13": "μ⁺", 12: "νe", "-12": "ν̄e", 14: "νμ", "-14": "ν̄μ", 321: "K⁺", "-321": "K⁻", 130: "K⁰L", 310: "K⁰S" };
+  9000011: "positronium", "-9001001": "antihydrogen", 211: "π⁺", "-211": "π⁻", 111: "π⁰", 13: "μ⁻", "-13": "μ⁺", 12: "νe", "-12": "ν̄e", 14: "νμ", "-14": "ν̄μ", 321: "K⁺", "-321": "K⁻", 130: "K⁰L", 310: "K⁰S" };
 export const STORY = [
   { key: "line", name: "Transfer line", dur: 7 },
   { key: "mag", name: "Magnets", dur: 5.5 },
   { key: "el", name: "Electrodes", dur: 4.5 },
   { key: "tr", name: "Transport", dur: 11 },
+  { key: "ps", name: "Positronium", dur: 13 },
+  { key: "hb", name: "Antihydrogen", dur: 12 },
 ];
 const GROUP_COL = { C: "#8e9aaf", HV: "#e0b24a", P: "#5ac8a8", T: "#4fb3d9", B: "#5e8fff", A: "#b07cf0" };
 
@@ -110,7 +115,7 @@ export class EventDisplay {
     this.controls = new OrbitControls(this.camera, this.labels.domElement);
     this.controls.enableDamping = true; this.controls.dampingFactor = 0.08;
     this.world = new THREE.Group(); this.scene.add(this.world);
-    this.layers = { line: new THREE.Group(), field: new THREE.Group(), bmap: new THREE.Group(), pot: new THREE.Group(), bunch: new THREE.Group(), electrodes: new THREE.Group(), coils: new THREE.Group(), cryo: new THREE.Group(), ovc: new THREE.Group(), scint: new THREE.Group(), labels: new THREE.Group(), tracks: new THREE.Group(), marks: new THREE.Group(), axis: new THREE.Group() };
+    this.layers = { line: new THREE.Group(), field: new THREE.Group(), bmap: new THREE.Group(), pot: new THREE.Group(), bunch: new THREE.Group(), electrodes: new THREE.Group(), coils: new THREE.Group(), cryo: new THREE.Group(), ovc: new THREE.Group(), hbar: new THREE.Group(), scint: new THREE.Group(), labels: new THREE.Group(), tracks: new THREE.Group(), marks: new THREE.Group(), axis: new THREE.Group() };
     Object.values(this.layers).forEach((g) => this.world.add(g));
     this.opts = { cutaway: true, colorByVoltage: false, radial: 1 };
     this.time = { u: 1, playing: false, speed: 1, duration: 9, sorted: [0, 1] };
@@ -145,7 +150,7 @@ export class EventDisplay {
   setVoltages(v) { this.voltages = v || {}; this.recolorElectrodes(); }
   buildGeometry() {
     const geo = this.geo; if (!geo) return;
-    for (const k of ["electrodes", "coils", "cryo", "ovc", "scint", "labels", "axis"]) this.layers[k].clear();
+    for (const k of ["electrodes", "coils", "cryo", "ovc", "hbar", "scint", "labels", "axis"]) this.layers[k].clear();
     this.cryo = {};
     const cut = this.opts.cutaway ? [90, 270] : [0, 360];
     this.elMeshes = [];
@@ -210,6 +215,11 @@ export class EventDisplay {
         m.userData = { kind: "ovc", ...o }; this.layers.ovc.add(m);
       }
       this.addLabel("Outer vacuum vessel · 293 K · ~1e-7 mbar", toScene(0, -(o.ro + 60), (o.z0 + o.z1) / 2), "lbl ovc");
+    }
+    // positrons / H̄ / gravity module: never let a problem here stop the rest of the display from building
+    if (geo.hbar) {
+      try { this.hbarModel = new HbarModel(geo.hbar, this.dotTex); this.layers.hbar.add(this.hbarModel.build()); }
+      catch (err) { console.error("positron / H̄ model skipped:", err); this.hbarModel = null; this.layers.hbar.clear(); }
     }
     this.scMeshes = {};
     for (const s of geo.scintillators) {
@@ -308,7 +318,15 @@ export class EventDisplay {
     if (k === "radial") this.applyRadial();
   }
   applyRadial() { const k = this.opts.radial; this.world.scale.set(1, k, k); Object.values(this.cryo).forEach((c) => this.placeCryoPlane(c)); }
-  setLayer(k, on) { this.layers[k].visible = on;  if (k === "labels") this.labels.domElement.classList.toggle("hide-labels", !on); }
+  setLayer(k, on) { (this.userVis ||= {})[k] = on; if (["tracks", "marks", "hbar"].includes(k)) this.applyVis(); else this.layers[k].visible = on; if (k === "labels") this.labels.domElement.classList.toggle("hide-labels", !on); }
+  // only the layers the positronium / antihydrogen chapters override; everything else is set directly
+  applyVis() {
+    const u = this.userVis || {}, hb = this.story.on && this.storyLocate(this.story.u).i >= 4;
+    for (const k of ["tracks", "marks", "hbar"]) {
+      const v = u[k] ?? true;
+      this.layers[k].visible = hb ? k === "hbar" : v;
+    }
+  }
 
   /* ---------------- tracks ---------------- */
   setTracks(data) {
@@ -377,6 +395,7 @@ export class EventDisplay {
       this.layers.marks.add(this.trapPts);
     }
     this.pulses = data.pulses || [];
+    try { this.hbarModel?.setLineTracks(data.eline); } catch (err) { console.error(err); }
     const prim = this.trackInfo.filter((t) => t.pdg === -2212 && t.par === 0);
     if (prim.length) this.zDel = prim.reduce((a, t) => a + t.start[2], 0) / prim.length;
     this.bunchInit = prim.map((t, i) => ({ x: t.start[0], y: t.start[1], ev: t.ev, dz: 260 * Math.sin(i * 12.9898) * Math.cos(i * 4.1414), ph: (i * 0.618) % 1 }));
@@ -394,6 +413,31 @@ export class EventDisplay {
       for (const [ev, , , , n] of d.meta) { if (this.event < 0 || ev === this.event) for (let k = 0; k < n; k++) ts.push(d.t[off + k]); off += n; }
     }
     if (!ts.length) ts = [0, 1];
+    // full H̄ shot: give the sub-µs positronium window (e+ implant -> H̄ formation) its share of playback time
+    const prm = d?.params;
+    if (prm?.hbarTime && prm?.positronArrival) {
+      const a = +prm.positronArrival - 60, b = +prm.hbarTime + 400, n = Math.round(ts.length * 0.35);
+      for (let k = 0; k < n; k++) ts.push(a + ((b - a) * k) / n);
+    }
+    // Geant4 H̄ runs: the e+ cross the apparatus in ~60 ns and the Ps live ~1 µs, while the H̄ fly for ms; reserve playback
+    // time for the e+ flight (25 %) and the positronium window (30 %) so they are not squeezed into one pixel
+    if (prm?.engine === "geant4" && d?.meta) {
+      let off = 0, a = Infinity, b = -Infinity;
+      for (const [ev, , par, pdg, n] of d.meta) { if (pdg === -11 && par === 0 && (this.event < 0 || ev === this.event)) { a = Math.min(a, d.t[off]); b = Math.max(b, d.t[off + n - 1]); } off += n; }
+      if (isFinite(a)) {
+        const base = ts.length, n1 = Math.round(base * 0.35), n2 = Math.round(base * 0.45);
+        for (let k = 0; k < n1; k++) ts.push(a + ((b - a) * k) / n1);
+        for (let k = 0; k < n2; k++) ts.push(b + (1500 * k) / n2);
+      }
+    }
+    // Geant4 positron line (source -> moderator -> buffer-gas trap) plays first, as a prelude on its own clock
+    this.linePrelude = null;
+    if (d?.eline?.tracks?.length && ts.length) {
+      let t0 = Infinity, t1 = -Infinity; for (const x of ts) { if (x < t0) t0 = x; if (x > t1) t1 = x; }
+      const P = Math.max(200, 0.25 * (t1 - t0)), n = Math.round(ts.length * 0.3);
+      this.linePrelude = { a: t0 - P, b: t0 };
+      for (let k = 0; k < n; k++) ts.push(t0 - P + (P * k) / n);
+    }
     ts.sort((a, b) => a - b);
     const step = Math.max(1, Math.floor(ts.length / 4000));
     this.time.sorted = ts.filter((_, i) => i % step === 0).concat([ts[ts.length - 1]]);
@@ -427,8 +471,10 @@ export class EventDisplay {
       }
     }
     if (!(this.story.on && this.storyLocate(this.story.u).i < 3)) this.updatePotential(t >= 1e9 ? Infinity : t);
+    if (!this.story.on && this.hbarModel) { try { this.hbarModel.overlay(t, this.data?.params); } catch (err) { console.error(err); } }
+    if (this.hbarModel?.lineGroup && !this.story.on) { const L = this.linePrelude; this.hbarModel.lineProgress(!L || t >= 1e9 ? 1 : Math.min(1, Math.max(0, (t - L.a) / (L.b - L.a)))); }
     // detector hits / annihilations crossed since the last frame (sound)
-    const live = this.time.playing || this.story.playing;
+    const live = this.time.playing || this.story.playing || this.recordLive;
     if (live && this.hooks.onHits && this._tPrev != null && t > this._tPrev && t < 1e9 && this.data) {
       const a = this._tPrev, inEv = (ev) => this.event < 0 || ev === this.event;
       const hits = (this.data.hits || []).filter((r) => r[4] > a && r[4] <= t && inEv(r[5]));
@@ -437,7 +483,7 @@ export class EventDisplay {
       if (hits.length || anns.length) this.hooks.onHits(hits, anns);
     }
     this._tPrev = t < 1e9 ? t : null;
-    this.hooks.onTime?.(this.time.u, t >= 1e9 ? this.time.sorted[this.time.sorted.length - 1] : t);
+    this.hooks.onTime?.(this.time.u, t >= 1e9 ? this.time.sorted[this.time.sorted.length - 1] : t, this.linePrelude && t < this.linePrelude.b ? (t - this.linePrelude.a) / (this.linePrelude.b - this.linePrelude.a) : null);
   }
   play(on = !this.time.playing) { this.time.playing = on; if (on && this.time.u >= 0.999) this.setU(0); this.hooks.onPlay?.(on); }
 
@@ -521,12 +567,28 @@ export class EventDisplay {
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
     this.labels.render(this.scene, this.camera);
+    const nowD = performance.now();
+    if (!this._declT || nowD - this._declT > 120) { this._declT = nowD; this.declutterLabels(); }
+  }
+  // labels that would overlap one already placed are hidden (important ones first), so zooming out does not pile them up
+  declutterLabels() {
+    const els = [...this.labels.domElement.querySelectorAll(".lbl")].filter((e) => e.style.display !== "none" && e.isConnected);
+    const rank = (e) => { const c = e.classList; return c.contains("grp") ? 0 : c.contains("del") || c.contains("potmin") ? 1 : c.contains("mag") || (c.contains("hb") && !c.contains("dim")) ? 2
+      : c.contains("cryo") || c.contains("ovc") || c.contains("line") || c.contains("pulse") ? 3 : c.contains("hv") || c.contains("sc") || c.contains("foil") || c.contains("pot") ? 4 : c.contains("dim") ? 5 : c.contains("tick") ? 6 : 4; };
+    const items = els.map((e) => ({ e, r: rank(e), b: e.getBoundingClientRect() })).filter((x) => x.b.width > 0).sort((a, b) => a.r - b.r);
+    const placed = [], pad = 3;
+    for (const it of items) {
+      const b = it.b, hit = placed.some((p) => b.left < p.right + pad && b.right > p.left - pad && b.top < p.bottom + pad && b.bottom > p.top - pad);
+      it.e.style.visibility = hit ? "hidden" : ""; if (!hit) placed.push(b);
+    }
   }
 
   /* ---------------- camera ---------------- */
   setView(kind) {
     const c = new THREE.Vector3(-250, 0, 0);
     if (kind === "line") { const zc = this.zDel - 3000; this.controls.target.set(zc, 0, 0); this.camera.position.set(zc + 200, 1300, 4200); return; }
+    if (kind === "eplus") { this.controls.target.set(-2350, 700, 0); this.camera.position.set(-2250, 2000, 6200); return; }      // positron line: source -> trap -> accumulator -> 5 T entrance
+    if (kind === "moire") { this.controls.target.set(2100, 0, 0); this.camera.position.set(1500, 650, 1700); return; }          // gravity module
     const pos = { side: [-250, 120, 3400], top: [-250, 3400, 10], end: [-3200, 120, 60], iso: [-1500, 950, 1650], trap: [-250, 60, 520] }[kind] || [-1500, 950, 1650];
     this.camera.position.set(...pos); this.controls.target.copy(c); this.camera.near = kind === "trap" ? 0.5 : 1; this.camera.updateProjectionMatrix();
   }
@@ -772,6 +834,9 @@ export class EventDisplay {
       for (const m of Object.values(this.scMeshes || {})) m.userData.flash = 0;
       this.updatePotential(-Infinity); this._tPrev = null;
     } else this.setU(pt);
+    // 5-6 positrons -> positronium -> antihydrogen -> gravity (hbar.js)
+    try { this.hbarModel?.story(i - 4, p, this.story.on && i >= 4); } catch (err) { console.error(err); }
+    this.applyVis();
     // camera
     if (this.story.on && this.story.auto && !silent) this.storyCamera(i, p, zb);
     if (!silent) this.hooks.onStory?.(this.story.u, i, p, { B: bnow * (this.Bmax || 0), Vmin: (this.Vmin || 0) * pe, t: i === 3 ? this.tAt(pt) : 0, zb });
@@ -789,7 +854,11 @@ export class EventDisplay {
     if (i === 0) { const t = v(zb + 300, 0, 0); a = b = { t, c: v(zb - 500, 260, 760) }; q = 1; }
     else if (i === 1) { a = endLine; b = wide; q = ease(Math.min(1, p / 0.6)); }
     else if (i === 2) { a = wide; b = close; q = ease(Math.min(1, p / 0.7)); }
-    else { a = close; b = fin; q = ease(Math.min(1, p / 0.5)); }
+    else if (i === 3) { a = close; b = fin; q = ease(Math.min(1, p / 0.5)); }
+    else if (this.hbarModel) {
+      const cam = this.hbarModel.camera(i - 4, p);
+      if (i === 4 && p < 0.1) { a = fin; b = cam; q = ease(p / 0.1); } else { a = b = cam; q = 1; }
+    } else { a = b = fin; q = 1; }
     this.controls.target.copy(a.t.clone().lerp(b.t, q));
     this.camera.position.copy(a.c.clone().lerp(b.c, q));
     const k = this.opts.radial; this.controls.target.y *= k; this.controls.target.z *= k;
@@ -797,22 +866,25 @@ export class EventDisplay {
 
   /* ---------------- recording ---------------- */
   // Steps the animation deterministically and hands every rendered frame to onFrame(glCanvas, labels).
-  async record({ mode = "story", frames = 200, onFrame, onProgress, shouldStop }) {
-    this.recording = true; this.story.playing = false; this.time.playing = false;
+  async record({ mode = "story", frames = 200, onFrame, onProgress, shouldStop, realtimeFps = 0, onBeforeFrame }) {
+    // realtimeFps > 0: frames are paced on the wall clock (video capture with sound), and hits / annihilations fire the sound hooks
+    this.recording = true; this.recordLive = realtimeFps > 0; this.story.playing = false; this.time.playing = false; this._tPrev = null;
     const auto = this.story.auto; this.story.auto = true;
     try {
       for (let k = 0; k < frames; k++) {
         if (shouldStop?.()) break;
         const u = frames > 1 ? k / (frames - 1) : 1;
+        onBeforeFrame?.(k);
         if (mode === "story") this.setStory(u); else this.setU(Math.min(u, 0.9999));
         if (this.scMeshes) for (const m of Object.values(this.scMeshes)) { m.material.emissiveIntensity = 2.2 * m.userData.flash; m.material.opacity = 0.16 + 0.5 * m.userData.flash; }
         this.controls.update();
         this.renderer.render(this.scene, this.camera);
         await onFrame(this.renderer.domElement, this.screenLabels(), k);
         onProgress?.(k + 1, frames);
-        if (k % 3 === 0) await new Promise((r) => requestAnimationFrame(r));
+        if (realtimeFps > 0) await new Promise((r) => setTimeout(r, 1000 / realtimeFps));   // one frame slot of recording per frame (the recorder is paused while rendering)
+        else if (k % 3 === 0) await new Promise((r) => requestAnimationFrame(r));
       }
-    } finally { this.recording = false; this.story.auto = auto; }
+    } finally { this.recording = false; this.recordLive = false; this.story.auto = auto; }
   }
   screenLabels() {
     if (!this.layers.labels.visible && !this.layers.line.visible) return [];
@@ -820,6 +892,7 @@ export class EventDisplay {
     this.scene.traverseVisible((o) => {
       if (!o.isCSS2DObject) return;
       if (this.labels.domElement.classList.contains("hide-labels")) return;
+      if (o.element.style.visibility === "hidden") return;      // decluttered
       o.getWorldPosition(v); v.project(this.camera);
       if (v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05) return;
       const cs = (o._cs ||= getComputedStyle(o.element));
@@ -844,7 +917,7 @@ export class EventDisplay {
       const info = this.trackInfo[o.userData.seg[Math.floor(vi / 2)]];
       return this.hooks.onPick?.({ type: "track", ...info, species: this.species[info.si] });
     }
-    const hm = this.raycaster.intersectObjects([...this.layers.electrodes.children, ...this.layers.scint.children, ...(this.layers.cryo.visible ? this.layers.cryo.children : []), ...(this.layers.ovc.visible ? this.layers.ovc.children : [])], true)[0];
+    const hm = this.raycaster.intersectObjects([...this.layers.electrodes.children, ...this.layers.scint.children, ...(this.layers.cryo.visible ? this.layers.cryo.children : []), ...(this.layers.ovc.visible ? this.layers.ovc.children : []), ...(this.layers.hbar.visible ? this.layers.hbar.children : [])], true).find((x) => x.object.userData.kind);
     if (hm?.object.userData.kind) return this.hooks.onPick?.({ type: hm.object.userData.kind, ...hm.object.userData, V: this.voltages[hm.object.userData.id] });
     this.hooks.onPick?.(null);
   }

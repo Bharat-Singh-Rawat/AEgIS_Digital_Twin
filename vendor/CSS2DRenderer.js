@@ -114,14 +114,17 @@ class CSS2DRenderer {
 
 		};
 
-		function renderObject( object, scene, camera ) {
+		// AEgIS twin patch: a label is hidden when any of its parents is hidden (upstream only checked the label itself)
+		function renderObject( object, scene, camera, parentVisible = true ) {
+
+			const shown = parentVisible && object.visible;
 
 			if ( object.isCSS2DObject ) {
 
 				_vector.setFromMatrixPosition( object.matrixWorld );
 				_vector.applyMatrix4( _viewProjectionMatrix );
 
-				const visible = ( object.visible === true ) && ( _vector.z >= - 1 && _vector.z <= 1 ) && ( object.layers.test( camera.layers ) === true );
+				const visible = ( shown === true ) && ( _vector.z >= - 1 && _vector.z <= 1 ) && ( object.layers.test( camera.layers ) === true );
 				object.element.style.display = ( visible === true ) ? '' : 'none';
 
 				if ( visible === true ) {
@@ -152,7 +155,7 @@ class CSS2DRenderer {
 
 			for ( let i = 0, l = object.children.length; i < l; i ++ ) {
 
-				renderObject( object.children[ i ], scene, camera );
+				renderObject( object.children[ i ], scene, camera, shown );
 
 			}
 

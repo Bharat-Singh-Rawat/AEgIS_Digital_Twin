@@ -37,6 +37,7 @@
       <a data-page="electrodes"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>Electrodes</a>
       <div class="nav-label">Simulation</div>
       <a data-page="simulate"><svg viewBox="0 0 24 24"><path d="M7 4v16l13-8z"/></svg>Simulate<span class="badge" id="nav-running" hidden>0</span></a>
+      <a data-page="positrons"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8" fill="none" stroke-width="1.8" stroke-linecap="round"/></svg>Positrons</a>
       <a data-page="results"><svg viewBox="0 0 24 24"><path d="M4 20V10h3v10zm6.5 0V4h3v16zM17 20v-7h3v7z"/></svg>Results</a>
       <a data-page="surrogate"><svg viewBox="0 0 24 24"><path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8zM19 14l.9 2.6L22.5 17.5l-2.6.9L19 21l-.9-2.6-2.6-.9 2.6-.9zM5 15l.7 1.8 1.8.7-1.8.7L5 20l-.7-1.8L2.5 17.5l1.8-.7z"/></svg>Surrogate</a>
       <a data-page="display"><svg viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7zm0 2.3 6.6 3.7L12 11.7 5.4 8zM5 9.7l6 3.4v6.6l-6-3.4zm8 10V13.1l6-3.4v6.6z"/></svg>Event Display</a>
@@ -163,6 +164,37 @@ np.savez("lne02_end.npz", x=p.x, px=p.px, y=p.y, py=p.py,
           <div class="field"><span>Electric field</span><div class="seg" id="r-ef"><button data-v="1" class="on">ROM</button><button data-v="2">Analytic well</button><button data-v="0">Off</button></div></div>
           <div class="field"><span>Beam</span><select id="r-beam"></select></div>
           <label class="field"><span>Record trajectories for 3D display (first N events, 0 = off)</span><input type="number" id="r-trace" value="100" min="0" max="2000"></label>
+          <div class="field"><span>Mode</span><div class="seg" id="r-mode"><button data-v="catch" class="on">Catching</button><button data-v="ballistic">Ballistic H̄</button><button data-v="positron">Positron shot</button><button data-v="fullshot">Full H̄ shot</button><button data-v="geant4">Geant4 H̄</button></div></div>
+          <div class="ballistic-box" id="r-g4" hidden>
+            <p class="muted small">Custom Geant4 11.4 application (hbar_g4/): one e⁺ per event from the positron line through the real fields into the silica, Geant4 stopping → positronium (7 %, 142 ns o-Ps decay to 3γ) → 205+1693 nm laser → Rydberg Ps (motional-Stark limit in the local B) → charge exchange in the p̄ cloud taken from a G4beamline run → H̄ (falls under gravity) → gratings and detector, where it annihilates into a p̄ + e⁺ that Geant4 annihilates (π, γ). Rare steps use weights; results are per shot of 2×10⁶ e⁺.</p>
+            <div class="rb-grid">
+              <label class="field"><span>p̄ cloud from run</span><select id="g4-src"></select></label>
+              <label class="field"><span>Ps yield</span><input type="number" id="g4-yield" value="0.07" min="0" max="1" step="0.01"></label>
+              <label class="field"><span>Rydberg n (Ps)</span><input type="number" id="g4-n" value="17" min="5" max="40" step="1"></label>
+              <label class="field"><span>Laser delay after implant (ns)</span><input type="number" id="g4-delay" value="25" min="0" step="5"></label>
+              <label class="field"><span>p̄ in the cloud</span><input type="number" id="g4-np" value="5000000" min="1000" step="500000"></label>
+              <label class="field"><span>H̄ copies per formation (splitting)</span><input type="number" id="g4-split" value="20" min="1" max="200" step="5"></label>
+            </div>
+          </div>
+          <div class="ballistic-box" id="r-ballistic" hidden>
+            <p class="muted small" id="rb-help">AEgIS 2023 ballistic sequence (Volponi 2024, §4.2.4): P12 → A1 parabola, P11 wall, A0 reflector, Ps target in, degrader out. The p̄ cloud is launched from P12; G4beamline records every p̄ at the formation time.</p>
+            <div class="rb-grid">
+              <label class="field"><span>Parabola ends (V)</span><input type="number" id="rb-end" value="-70" step="1"></label>
+              <label class="field"><span>Parabola top (V)</span><input type="number" id="rb-top" value="0" step="1"></label>
+              <label class="field"><span>P11 wall (V)</span><input type="number" id="rb-wall" value="-180" step="5"></label>
+              <label class="field"><span>A0 reflector (V)</span><input type="number" id="rb-target" value="-200" step="5"></label>
+              <label class="field rb-pbar"><span>Storage trap</span><select id="rb-trap"><option value="P12">Direct launch from P12</option><option value="P3-P9" selected>P3–P9, release by opening P9</option><option value="P3-P6">P3–P6, release by opening P6</option></select></label>
+              <label class="field rb-pbar rb-store"><span>Release time (µs)</span><input type="number" id="rb-trel" value="1.0" min="0" step="0.1"></label>
+              <label class="field rb-pbar rb-store"><span>Wall open for (µs, 0 = stays open)</span><input type="number" id="rb-open" value="0" min="0" step="0.5"></label>
+              <label class="field rb-pbar rb-store"><span>Opening ramp (ns)</span><input type="number" id="rb-rise" value="20" min="1" step="5"></label>
+              <label class="field rb-pbar"><span>p̄ temperature (K)</span><input type="number" id="rb-T" value="300" min="4" step="10"></label>
+              <label class="field rb-pbar"><span id="rb-tform-l">Formation time after release (µs)</span><input type="number" id="rb-tform" value="12.0" min="0.5" step="0.1"></label>
+              <label class="field rb-pbar"><span>Tracking time (µs)</span><input type="number" id="rb-time" value="30" min="2" step="1"></label>
+              <label class="field rb-pos" hidden><span>e⁺ energy (keV)</span><input type="number" id="rb-ke" value="2.5" min="0.1" step="0.1"></label>
+              <label class="field rb-full" hidden><span>extra e⁺ delay (ns)</span><input type="number" id="rb-delay" value="0" step="50"></label>
+              <label class="field rb-full" hidden><span>e⁺ in the bunch (simulated)</span><input type="number" id="rb-ne" value="40" min="1" max="5000" step="10"></label>
+            </div>
+          </div>
           <button class="btn primary wide big" id="btn-run">Run simulation</button>
           <p class="muted small" id="run-limits"></p>
           <p class="err" id="run-err"></p>
@@ -198,6 +230,43 @@ np.savez("lne02_end.npz", x=p.x, px=p.px, y=p.y, py=p.py,
     </section>
 
     <!-- RESULTS -->
+    <section class="page" id="page-positrons">
+      <header><h1>Positrons</h1><p class="sub">From the ²²Na source to the bunch: Geant4 through the capsule and the solid-neon moderator, then the slow beam, the buffer-gas trap and the accumulator.</p></header>
+      <div class="grid-side">
+        <div class="card">
+          <h3>1 · Source + moderator (G4beamline)</h3>
+          <p class="muted small">²²Na (β⁺ 90.3 %, 546.44 keV endpoint) on a Ta backing behind a 5 µm Ti window (iThemba capsule), solid neon on a Cu cone at 7 K, 120 G guide field. Geant4 tracks every β⁺ until it stops; re-emission from the neon is a diffusion-escape model (Geant4 has no moderation physics).</p>
+          <div class="two"><label class="field"><span>β⁺ to simulate</span><input type="number" id="ps-n" value="100000" min="1000" step="10000"></label>
+            <label class="field"><span>Solid Ne thickness (µm, not published)</span><input type="number" id="ps-ne" value="50" min="1" max="500" step="5"></label></div>
+          <button class="btn primary wide" id="ps-run">Run source simulation</button>
+          <div class="field" style="margin-top:12px"><span>Source run</span><select id="ps-runsel"></select></div>
+          <h3 style="margin-top:14px">2 · Chain settings</h3>
+          <div class="two"><label class="field"><span>e⁺ diffusion length in Ne (µm)</span><input type="number" id="ps-L" value="1.0" min="0.1" max="5" step="0.05"></label>
+            <label class="field"><span>Date (source activity)</span><input type="date" id="ps-date" value="2023-10-15"></label></div>
+          <div class="two"><label class="field"><span>Stage-I kinetic energy (eV)</span><input type="number" id="ps-K1" value="10.5" min="8.6" max="20" step="0.1"></label>
+            <label class="field"><span>Stage-I N₂ pressure (mbar)</span><input type="number" id="ps-p1" value="0.0008" min="0.00001" step="0.0001"></label></div>
+          <button class="btn wide" id="ps-calc">Compute chain</button>
+          <p class="muted small" id="ps-msg"></p>
+          <h3 style="margin-top:14px">3 · Full positron line in Geant4</h3>
+          <p class="muted small">Custom Geant4 11.4 app (hbar_g4/positron_line.cc): the same source and moderator, then re-emission from the neon surface, guide fields 120 → 250 → 750 G, moderator bias and slow-e⁺ filter, and the 3-stage N₂ buffer-gas trap with an e⁺–N₂ process (a¹Π excitation, Ps formation; Marler &amp; Surko 2005). Every positron is tracked from the source until it is trapped, lost or escapes.</p>
+          <div class="two"><label class="field"><span>β⁺ to simulate</span><input type="number" id="pl-n" value="50000" min="1000" step="10000"></label>
+            <label class="field"><span>Moderator bias (V)</span><input type="number" id="pl-vmod" value="9.8" min="8" max="20" step="0.1"></label></div>
+          <div class="two"><label class="field"><span>Trap inlet barrier (V)</span><input type="number" id="pl-vin" value="5" min="0" max="15" step="0.5"></label>
+            <label class="field"><span>Stage-I N₂ pressure (mbar)</span><input type="number" id="pl-p1" value="0.0008" min="0.00001" step="0.0001"></label></div>
+          <button class="btn primary wide" id="pl-run">Run positron line (Geant4)</button>
+          <div class="field" style="margin-top:12px"><span>Positron-line run</span><select id="pl-runsel"></select></div>
+        </div>
+        <div>
+          <div class="card" id="pl-card" hidden><h3>Geant4 positron line: source → trap</h3><div class="tiles" id="pl-tiles"></div><div id="pl-chain"></div>
+            <div class="rb-plots"><div id="pl-g4tracks" class="plot"></div><div id="pl-g4trap" class="plot"></div></div><p class="muted small" id="pl-note"></p></div>
+          <div class="card"><h3>Positrons per second, stage by stage</h3><div id="ps-chain"></div></div>
+          <div class="card"><h3>Where the β⁺ stop (Geant4)</h3><div class="rb-plots"><div id="pl-ps-where" class="plot"></div><div id="pl-ps-depth" class="plot"></div></div></div>
+          <div class="card"><h3>Moderated beam and trapping</h3><div class="rb-plots"><div id="pl-ps-r" class="plot"></div><div id="pl-ps-trap" class="plot"></div></div></div>
+          <div class="card"><h3>Accumulator</h3><div id="pl-ps-stack" class="plot"></div></div>
+        </div>
+      </div>
+    </section>
+
     <section class="page" id="page-results">
       <header><h1>Results</h1><p class="sub">Annihilation vertices, detector response and energy deposition.</p></header>
       <div class="grid-results">
@@ -213,6 +282,8 @@ np.savez("lne02_end.npz", x=p.x, px=p.px, y=p.y, py=p.py,
         </div>
         <div class="stack">
           <div class="tiles big" id="res-tiles"></div>
+          <div class="card" id="res-g4" hidden><h3>Geant4 positronium → H̄</h3><div class="tiles" id="g4-tiles"></div><div class="rb-plots"><div id="pl-g4chain" class="plot"></div><div id="pl-g4det" class="plot"></div></div><p class="muted small" id="g4-note"></p></div>
+          <div class="card" id="res-ballistic" hidden><h3>Ballistic transfer</h3><div class="tiles" id="rb-tiles"></div><div class="rb-plots"><div id="pl-rbz" class="plot"></div><div id="pl-rbv" class="plot"></div></div></div>
           <div class="card"><h3>Annihilations along the trap</h3><div id="pl-annz" class="plot"></div></div>
           <div class="grid2">
             <div class="card"><h3>Vertex map (r–z)</h3><div id="pl-annrz" class="plot sm2"></div></div>
@@ -335,6 +406,7 @@ np.savez("lne02_end.npz", x=p.x, px=p.px, y=p.y, py=p.py,
           <label class="tg"><span>Cryostat (LHe / LN₂)</span><span class="switch"><input type="checkbox" data-layer="cryo" checked><i></i></span></label>
           <div class="cryo-ctl" id="d-cryo"></div>
           <label class="tg"><span>Vacuum vessel (OVC)</span><span class="switch"><input type="checkbox" data-layer="ovc" checked><i></i></span></label>
+          <label class="tg"><span>Positrons, H̄ &amp; gravity module</span><span class="switch"><input type="checkbox" data-layer="hbar" checked><i></i></span></label>
           <label class="tg"><span>Scintillators</span><span class="switch"><input type="checkbox" data-layer="scint" checked><i></i></span></label>
           <label class="tg"><span>Vertices &amp; hits</span><span class="switch"><input type="checkbox" data-layer="marks" checked><i></i></span></label>
           <label class="tg"><span>Labels</span><span class="switch"><input type="checkbox" data-layer="labels" checked><i></i></span></label>
@@ -344,7 +416,7 @@ np.savez("lne02_end.npz", x=p.x, px=p.px, y=p.y, py=p.py,
           <input type="range" id="d-rad" min="1" max="12" step="0.5" value="1">
         </div>
         <div class="glass hud-views">
-          <button data-view="line">Transfer line</button><button data-view="iso">Iso</button><button data-view="side">Side</button><button data-view="top">Top</button><button data-view="end">Beam's eye</button><button data-view="trap">Trap</button>
+          <button data-view="line">Transfer line</button><button data-view="iso">Iso</button><button data-view="side">Side</button><button data-view="top">Top</button><button data-view="end">Beam's eye</button><button data-view="trap">Trap</button><button data-view="eplus">e⁺ line</button><button data-view="moire">Moiré</button><button id="d-grav" class="gravbtn" title="Antihydrogen gravity measurement: moiré deflectometer Monte-Carlo">⚖ Gravity</button>
         </div>
         <div class="glass hud-info" id="d-info" hidden></div>
         <div class="glass cbars" id="d-cbars" hidden>
@@ -356,6 +428,26 @@ np.savez("lne02_end.npz", x=p.x, px=p.px, y=p.y, py=p.py,
         <div class="glass chapters" id="d-chapters" hidden></div>
         <div class="glass explainer" id="d-explainer" hidden></div>
         <div class="glass qalert" id="d-qalert" hidden></div>
+        <div class="glass gravpanel" id="d-gravpanel" hidden>
+          <button class="x" id="gv-x">✕</button>
+          <div class="hud-title">Antihydrogen gravity · moiré deflectometer</div>
+          <div class="gv-sub">Monte-Carlo: Ps → laser → charge exchange → H̄ flight through two gratings onto a position-sensitive detector. Gravity shifts the fringe by Δy = a·T², T = L/v.</div>
+          <div class="gv-ctl">
+            <label>H̄ speed <select id="gv-v"><option value="500">500 m/s</option><option value="1700" selected>1700 m/s (prototype plan)</option><option value="5000">5000 m/s</option><option value="20000">20 000 m/s (boost, 2023)</option></select></label>
+            <label>H̄ temperature <select id="gv-T"><option value="10">10 K</option><option value="50" selected>50 K</option><option value="100">100 K</option><option value="440">440 K (2018)</option></select></label>
+            <label>Grating period <select id="gv-d"><option value="100" selected>100 µm (prototype)</option><option value="20">20 µm (upgrade)</option></select></label>
+            <label>Gravity on H̄ <select id="gv-g"><option value="9.81" selected>+g (falls like matter)</option><option value="0">0 (no gravity)</option><option value="-9.81">−g (falls up)</option></select></label>
+            <label>Detected H̄ <select id="gv-n"><option value="100">100</option><option value="1000" selected>1 000</option><option value="10000">10 000</option><option value="100000">100 000</option></select></label>
+            <label>Detector <select id="gv-det"><option value="1.2" selected>CMOS · 1.2 µm</option><option value="12">MCP + Timepix3 · 12 µm</option></select></label>
+            <label>Rydberg level n<sub>Ps</sub> <select id="gv-nps"><option value="17" selected>17 (2018)</option><option value="21">21 (2023)</option><option value="24">24</option><option value="32">32 (goal)</option></select></label>
+            <label>H̄ source <select id="gv-src"><option value="">model (v, T above)</option></select></label>
+            <label>Ps laser cooling <select id="gv-cool"><option value="0" selected>off</option><option value="1">243 nm, 70 ns (2024)</option></select></label>
+            <button class="btn primary" id="gv-run">Run Monte-Carlo</button>
+          </div>
+          <div id="gv-plot" class="gv-plot"></div>
+          <div class="gv-out" id="gv-out"></div>
+          <div class="gv-src">Inputs: Huck (2025), Volponi (2024), Amsler et al. (2021), Antonello et al. (2020), Krasnický et al. (2016), Aghion et al. (2014). Display-level model, not a substitute for the collaboration's analysis.</div>
+        </div>
         <div class="hp-cursor" id="hp-cursor" hidden><svg viewBox="0 0 44 44"><circle cx="22" cy="22" r="9" class="dot"/><circle cx="22" cy="22" r="18" class="ring" pathLength="100"/></svg><span id="hp-cur-t"></span></div>
         <div class="glass handpanel" id="d-handpanel" hidden>
           <button class="x" id="hp-x" title="Turn hand control off">✕</button>
@@ -371,17 +463,19 @@ np.savez("lne02_end.npz", x=p.x, px=p.px, y=p.y, py=p.py,
           <div class="tread" id="d-tread">t = — ns</div>
           <button class="btn icon gifbtn sndbtn" id="d-sound" title="Annihilation sound: every detector hit plays a note">♪</button>
           <button class="btn icon gifbtn handbtn" id="d-hands" title="Hand control with your webcam (processed on this computer, nothing is uploaded)">✋</button>
-          <button class="btn icon gifbtn" id="d-gif" title="Save as GIF">GIF ⤓</button>
+          <button class="btn icon gifbtn" id="d-gif" title="Save as GIF or MP4 with sound">GIF / MP4 ⤓</button>
           <div class="seg mini" id="d-speed"><button data-v="0.5">½×</button><button data-v="1" class="on">1×</button><button data-v="2">2×</button></div>
         </div>
         <div class="glass gifsheet" id="d-gifsheet" hidden>
-          <div class="hud-title">Save as GIF</div>
+          <div class="hud-title">Save animation</div>
+          <div class="gs-row"><span>Format</span><div class="seg mini" id="g-fmt"><button data-v="gif" class="on">GIF</button><button data-v="mp4">MP4 + sound</button></div></div>
           <div class="gs-row"><span>Content</span><div class="seg mini" id="g-mode"><button data-v="story" class="on">Full story</button><button data-v="tracks">Tracks only</button></div></div>
           <div class="gs-row"><span>Width</span><div class="seg mini" id="g-w"><button data-v="640">640</button><button data-v="960" class="on">960</button><button data-v="1280">1280</button></div></div>
           <div class="gs-row"><span>Frame rate</span><div class="seg mini" id="g-fps"><button data-v="10">10</button><button data-v="15" class="on">15</button><button data-v="20">20</button></div></div>
           <div class="gs-row"><span>Length</span><div class="seg mini" id="g-len"><button data-v="0.5">Short</button><button data-v="1" class="on">Normal</button><button data-v="1.6">Long</button></div></div>
           <label class="tg"><span>Labels</span><span class="switch"><input type="checkbox" id="g-labels" checked><i></i></span></label>
           <label class="tg"><span>Captions</span><span class="switch"><input type="checkbox" id="g-caps" checked><i></i></span></label>
+          <label class="tg" id="g-sndrow" hidden><span>Annihilation sound</span><span class="switch"><input type="checkbox" id="g-snd" checked><i></i></span></label>
           <p class="gs-est" id="g-est"></p>
           <div class="gs-prog" hidden id="g-prog"><div class="progress"><i id="g-bar"></i></div><span id="g-stat"></span></div>
           <div class="ev-row"><button class="btn wide" id="g-cancel">Cancel</button><button class="btn primary wide" id="g-go">Record</button></div>

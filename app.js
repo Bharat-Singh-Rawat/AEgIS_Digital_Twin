@@ -54,6 +54,7 @@ function go(page) {
   if (page === "results") refreshRuns();
   if (page === "simulate") { refreshBeams(); updateRunSummary(); }
   if (page === "beam") refreshBeams();
+  if (page === "positrons") posInit();
   if (page === "display") initDisplay();
   if (page === "surrogate") { if (!S._sgInit) { S._sgInit = true; sgRender(); } sgRefresh(); }
 }
@@ -269,9 +270,64 @@ function runRequestBase() {
     beam: $("#r-beam").value ? { file: $("#r-beam").value } : null, currents, voltages, traceEvents: +$("#r-trace").value || 0 };
 }
 function runRequest() {
-  const r = runRequestBase();
-  return $("#c-deg") ? catchRequest(r) : r;
+  const r = runRequestBase(), mode = S.runMode || "catch";
+  if (mode === "catch") return $("#c-deg") ? catchRequest(r) : r;
+  r.mode = mode; r.beam = null;
+  if (mode === "geant4") { r.g4 = { pbarRun: $("#g4-src").value, ps_yield: $("#g4-yield").value, n_ps: $("#g4-n").value, laser_delay: $("#g4-delay").value, pbar_n: $("#g4-np").value, hbar_split: $("#g4-split").value }; return r; }
+  r.ballistic = { v_end: +$("#rb-end").value, v_top: +$("#rb-top").value, wall: +$("#rb-wall").value, target: +$("#rb-target").value,
+    T_K: +$("#rb-T").value, t_form_us: +$("#rb-tform").value, time_us: +$("#rb-time").value, ke_kev: +$("#rb-ke").value,
+    trap: $("#rb-trap").value, t_release_us: +$("#rb-trel").value, open_us: +$("#rb-open").value, rise_ns: +$("#rb-rise").value,
+    delay_ns: +$("#rb-delay").value, n_positrons: +$("#rb-ne").value };
+  return r;
 }
+function setRunMode(m) {
+  S.runMode = m; $$("#r-mode button").forEach((b) => b.classList.toggle("on", b.dataset.v === m));
+  const pb = m === "ballistic" || m === "fullshot";
+  $("#r-g4").hidden = m !== "geant4";
+  if (m === "geant4") { $("#r-ballistic").hidden = true; fillG4Sources(); S._lastMode = m; updateRunSummary(); return; }
+  $("#r-ballistic").hidden = m === "catch"; $$(".rb-pbar").forEach((e) => (e.hidden = !pb)); $$(".rb-pos").forEach((e) => (e.hidden = m !== "positron" && m !== "fullshot"));
+  $$(".rb-full").forEach((e) => (e.hidden = m !== "fullshot"));
+  // full shot: the time set is when the e+ implant; H̄ forms ~0.35 µs later, when the Rydberg Ps reaches the p̄
+  $("#rb-tform-l").textContent = m === "fullshot" ? "e⁺ implant time after release (µs) · H̄ ≈ +0.35 µs" : "Formation time after release (µs)";
+  if (m === "fullshot" && S._lastMode !== "fullshot" && $("#rb-trap").value !== "P12") $("#rb-tform").value = 11.9;
+  S._lastMode = m;
+  $$(".rb-store").forEach((e) => (e.hidden = !pb || $("#rb-trap").value === "P12"));
+  $("#rb-help").textContent = m === "fullshot" ? "Full H̄ shot (Volponi 2024 §4.2.6): the stored p̄ are released and roll down the parabola; one positron bunch (2.5 keV, 35 ns) from the positron line reaches the silica target at the formation time + the delay below. 0 = p̄ at rest in front of the target when the e⁺ implant; negative = e⁺ earlier (p̄ still moving forward). One G4beamline run, one clock."
+    : m === "positron" ? "One positron shot (Volponi 2024, §4.2.5): 2.5 keV, 35 ns FWHM, from the positron line (no degrader), into the silica target on A0 with the ballistic-sequence potentials. 0.9 mm at injection grows to ~2 mm FWHM at the target (5 T → 1 T)."
+    : "AEgIS 2023 ballistic sequence (Volponi 2024, §4.2.4): the p̄ are stored in a short trap (or P12), the downstream wall is pulsed open and they roll down the parabola to A1, stopping in front of the Ps target (A0 reflector, degrader out). G4beamline records every p̄ at the formation time.";
+  updateRunSummary();
+}
+$$("#r-mode button").forEach((b) => b.addEventListener("click", () => setRunMode(b.dataset.v)));
+function fillG4Sources() {
+  const sel = $("#g4-src"), cur = sel.value;
+  const br = (S.runs || []).filter((r) => (r.meta?.mode === "ballistic" || r.meta?.mode === "fullshot") && r.status === "done");
+  sel.innerHTML = br.map((r) => `<option value="${r.name}">${r.name} (${r.meta.mode})</option>`).join("") || `<option value="hbar_fullshot_demo">hbar_fullshot_demo</option>`;
+  if (cur && br.some((r) => r.name === cur)) sel.value = cur; else if (br.some((r) => r.name === "hbar_fullshot_demo")) sel.value = "hbar_fullshot_demo";
+}
+async function showG4(n, meta) {
+  const card = $("#res-g4"); card.hidden = meta?.mode !== "geant4"; if (card.hidden) return;
+  let g; try { g = await api("/api/g4hbar/" + encodeURIComponent(n)); } catch { card.hidden = true; return; }
+  if (!g.available) { $("#g4-tiles").innerHTML = `<div class="tile"><div class="l">${n}</div><div class="v">${g.status}<small> ${g.done}/${g.total ?? "?"} e⁺</small></div></div>`; Plotly.purge("pl-g4chain"); Plotly.purge("pl-g4det"); return; }
+  const ps = g.per_shot, f = (v, d = 3) => (v == null ? "—" : v >= 100 ? Math.round(v).toLocaleString() : v.toPrecision(d));
+  const det = ps.hbar_annih_Detector_w || 0;
+  $("#g4-tiles").innerHTML = [["H̄ per shot", `<b>${f(g.hbar_per_shot)}</b><small> (published 0.05–0.13)</small>`], ["e⁺ simulated", `${g.events.toLocaleString()}<small> · scaled to ${g.eplus_per_shot.toExponential(0)} e⁺/shot</small>`],
+    ["e⁺ stopped in the silica", `${(100 * (g.per_eplus.eplus_stopped_target || 0)).toFixed(1)}<small> %</small>`], ["Ps emitted / shot", f(ps.ps_emitted_w)],
+    ["Rydberg Ps / shot", f(ps.ps_rydberg_w)], ["Stark-ionised / shot", f(ps.ps_stark_ionised_w || 0)],
+    ["H̄ on the moiré detector / shot", `${f(det, 2)}<small> · ${g.hbar_per_shot ? (100 * det / g.hbar_per_shot).toPrecision(2) : 0} % of H̄</small>`]]
+    .map(([l, v]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div></div>`).join("");
+  const steps = [["e⁺ bunch", g.eplus_per_shot], ["stopped in SiO₂", ps.eplus_stopped_target], ["o-Ps emitted", ps.ps_emitted_w], ["laser → Rydberg", ps.ps_rydberg_w],
+    ["through the p̄ cloud", ps.ps_through_cloud_w], ["H̄ formed", g.hbar_per_shot], ["H̄ → grating 1", ps.hbar_annih_grating1_w || 0], ["H̄ → detector", det]];
+  plot("pl-g4chain", [{ type: "bar", x: steps.map((s) => s[0]), y: steps.map((s) => Math.max(s[1] || 0, 1e-12)), marker: { color: ["#bf5af2", "#bf5af2", "#5ac8fa", "#5ac8fa", "#5ac8fa", "#ffd60a", "#ffd60a", "#ffd60a"] },
+    text: steps.map((s) => f(s[1] || 0, 2)), textposition: "outside", hovertemplate: "%{x}: %{y:.3g} per shot<extra></extra>" }],
+    { margin: { l: 50, r: 10, t: 10, b: 70 }, yaxis: { type: "log", title: "per shot (weighted)" }, xaxis: { tickangle: -30 }, showlegend: false });
+  const d = g.detector;
+  if (d && d.x?.length) plot("pl-g4det", [{ type: "scattergl", mode: "markers", x: d.x, y: d.y, marker: { size: 4, color: d.tflight.map((t) => t / 1e3), colorscale: "Viridis", showscale: true, colorbar: { title: "TOF µs", thickness: 10 } }, hovertemplate: "x %{x:.2f} mm<br>y %{y:.3f} mm<extra></extra>" }],
+    { margin: { l: 50, r: 10, t: 10, b: 40 }, xaxis: { title: "detector x [mm]" }, yaxis: { title: "detector y [mm] (gravity ↓)" }, showlegend: false });
+  else Plotly.purge("pl-g4det");
+  const fates = Object.entries(g.hbar_fates_per_shot || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${f(v, 2)}`).join(" · ");
+  $("#g4-note").textContent = `H̄ annihilations per shot (directions sampled toward the gratings, the rest is counted as outside the acceptance): ${fates}. p̄ cloud from ${meta.pbarRun}. Every H̄ annihilation is handed to Geant4 as a p̄ + e⁺ at rest; their pions and gammas are in the Event Display and the scintillators.`;
+}
+$("#rb-trap").addEventListener("change", () => { setRunMode(S.runMode || "ballistic"); $("#rb-tform").value = $("#rb-trap").value === "P12" ? 9.0 : 12.0; });
 function updateRunSummary() {
   if (!S.state) return;
   const r = runRequest();
@@ -646,16 +702,42 @@ async function getResult(n) {
   if (RESULT_CACHE[n]?.status === "done") return RESULT_CACHE[n];
   const r = await api("/api/run/" + encodeURIComponent(n)); RESULT_CACHE[n] = r; return r;
 }
+async function showBallistic(n, meta) {
+  const card = $("#res-ballistic"); card.hidden = !(meta?.mode === "ballistic" || meta?.mode === "fullshot"); if (card.hidden) return;
+  let b; try { b = await api("/api/ballistic/" + encodeURIComponent(n)); } catch { card.hidden = true; return; }
+  const f = b.formation, pm = (v, s, d = 1) => (v == null ? "—" : `${v.toFixed(d)}<small> ± ${(s ?? 0).toFixed(d)}</small>`);
+  $("#rb-tiles").innerHTML = [["Launch", b.release ? `${b.trap}<small> · ${b.release} opened at ${(b.t_release / 1e3).toFixed(1)} µs</small>` : "P12<small> · direct</small>"],
+    ["Turning point z", pm(b.turn_z, b.turn_sd) + "<small> mm</small>"], ["First arrival", pm(b.first_us, b.first_sd, 2) + "<small> µs after release</small>"],
+    ["Oscillation period", pm(b.period_us, b.period_sd) + "<small> µs (thesis ≈ 24)</small>"],
+    ["p̄ at formation", f ? `${f.n}<small> at ${(b.t_form / 1e3).toFixed(1)} µs${b.first_us && Math.abs(b.t_form / 1e3 - b.first_us) > 1 ? ` · tip: arrival is ${b.first_us.toFixed(1)} µs` : ""}</small>` : "—"],
+    ["v_z at formation", f ? `${f.vz_mean.toFixed(0)}<small> ± ${f.vz_sd.toFixed(0)} m/s</small>` : "—"],
+    ...(b.timeline ? [["Timeline after release", `p̄ arrive ${b.first_us?.toFixed(2)} · e⁺ implant ${(b.timeline.implant / 1e3).toFixed(2)} · laser ${(b.timeline.laser / 1e3).toFixed(3)} · <b>H̄ ${(b.timeline.hbar / 1e3).toFixed(2)} µs</b><small> (Ps flight ${b.timeline.ps_flight.toFixed(0)} ns)</small>`]] : []),
+    ...(b.positrons ? [["e⁺ at the converter", `${(b.positrons.t_mean / 1e3).toFixed(3)}<small> µs (planned ${(b.positrons.planned / 1e3).toFixed(3)}) · ${b.positrons.t_fwhm.toFixed(0)} ns FWHM</small>`],
+      ["e⁺ spot / on target", `${b.positrons.spot.toFixed(1)}<small> mm FWHM · ${(100 * b.positrons.on_target).toFixed(0)} % on the silica</small>`]] : []), ["Cloud at formation", f ? `z ${f.z_mean.toFixed(0)}<small> ± ${f.z_sd.toFixed(1)} mm, r ${f.r_rms.toFixed(1)} mm</small>` : "—"]]
+    .map(([l, v]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div></div>`).join("");
+  plot("pl-rbz", [...(b.curves || []).map((c) => ({ x: c.t, y: c.z, mode: "lines", line: { width: 1, color: "rgba(255,55,95,.55)" }, hoverinfo: "skip" })),
+    { x: [b.t_form / 1e3, b.t_form / 1e3], y: [-400, 600], mode: "lines", line: { color: "#ffd60a", dash: "dot" }, name: "formation time" },
+    ...(b.positrons ? [{ x: [b.positrons.t_mean / 1e3], y: [574.25], mode: "markers", marker: { color: "#bf5af2", size: 12, symbol: "diamond" }, name: "e⁺ implant" }] : []),
+    ...(b.timeline && b.formation ? [{ x: [b.timeline.hbar / 1e3], y: [b.formation.z_mean], mode: "markers+text", marker: { color: "#ffd60a", size: 16, symbol: "star" }, text: ["H̄"], textposition: "top center", textfont: { color: "#ffd60a" }, name: "H̄ forms" }] : []),
+    { x: [0, Math.max(...(b.curves || [{ t: [30] }]).map((c) => c.t[c.t.length - 1] || 30))], y: [574.25, 574.25], mode: "lines", line: { color: "#64d2ff", dash: "dash" }, name: "Ps target face" }],
+    { margin: { l: 50, r: 10, t: 6, b: 36 }, xaxis: { title: b.release ? `t after ${b.release} opens [µs]` : "t after P13 opens [µs]" }, yaxis: { title: "z (CST) [mm]" }, showlegend: false,
+      shapes: b.release ? [{ type: "rect", x0: -b.t_release / 1e3, x1: 0, y0: -500, y1: 650, fillcolor: "rgba(255,159,10,.10)", line: { width: 0 } }] : [] });
+  if (f) plot("pl-rbv", [{ type: "histogram", x: f.vz, nbinsx: 30, marker: { color: "#ff375f" } }], { margin: { l: 40, r: 10, t: 6, b: 36 }, xaxis: { title: "p̄ v_z at formation [m/s]" }, yaxis: { title: "p̄" } });
+}
 async function openRun(n) {
   if (!n) return; S.selRun = n;
   $$("#res-runs .item").forEach((i) => i.classList.toggle("on", i.dataset.sel === n));
   const r = await getResult(n);
+  showBallistic(n, (S.runs || []).find((x) => x.name === n)?.meta); showG4(n, (S.runs || []).find((x) => x.name === n)?.meta);
   if (!r.ready) {
     $("#res-tiles").innerHTML = `<div class="tile"><div class="l">${n}</div><div class="v">${r.status}<small>${r.done}/${r.total ?? "?"} events</small></div></div>`;
     ["pl-annz", "pl-annrz", "pl-annxy", "pl-byel", "pl-sc"].forEach((id) => Plotly.purge(id)); $("#res-params").innerHTML = ""; return;
   }
   const s = r.summary, frac = s.primaries ? (100 * s.annihilations) / s.primaries : 0;
-  $("#res-tiles").innerHTML = [["Antiprotons", s.primaries, ""], ["Annihilated in trap", s.annihilations, ""], ["Fraction", frac.toFixed(1), "%"],
+  if (r.engine === "geant4") $("#res-tiles").innerHTML = [["e⁺ simulated (Geant4)", s.primaries, ""], ["H̄ per shot", (s.hbar_per_shot ?? 0).toPrecision(3), ""], ["H̄ annihilations (sampled tracks)", s.annihilations, ""],
+    ["Mean H̄ annihilation z", s.z_mean == null ? "–" : s.z_mean.toFixed(0), "mm"], ["On electrodes", s["on_electrode_wall(r>14.5mm)"], ""]]
+    .map(([l, v, u]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}<small>${u}</small></div></div>`).join("");
+  else $("#res-tiles").innerHTML = [["Antiprotons", s.primaries, ""], ["Annihilated in trap", s.annihilations, ""], ["Fraction", frac.toFixed(1), "%"],
     ["Mean vertex z", s.z_mean == null ? "–" : s.z_mean.toFixed(0), "mm"],
     ...(s.trapped != null ? [["Trapped", `${s.trapped}`, `${s.primaries ? ((100 * s.trapped) / s.primaries).toFixed(1) : 0}%`]] : [["On electrode wall", s["on_electrode_wall(r>14.5mm)"], ""]])]
     .map(([l, v, u]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}<small>${u}</small></div></div>`).join("");
@@ -693,10 +775,20 @@ const PDGCOL = { 22: "#f7c600", 2112: "#8e8e93", 211: "#ff9f0a", "-211": "#ff6b0
 const PDGN = { 22: "γ", 2112: "n", 211: "π⁺", "-211": "π⁻", "-11": "e⁺", 11: "e⁻", 13: "μ⁻", "-13": "μ⁺", 2212: "p", "-2212": "p̄" };
 async function renderPhysics(n) {
   let ph; try { ph = await api("/api/physics/" + encodeURIComponent(n)); } catch { return; }
-  if (!ph.ready || S.selRun !== n) return;
+  if (S.selRun !== n) return;
+  const PH_IDS = ["ph-fate", "ph-fields", "ph-ke", "ph-mult", "ph-cth", "ph-phi", "ph-time", "ph-deg", "ph-tof", "ph-coinc", "ph-edep", "ph-census"];
+  if (!ph.ready || !ph.n_annihilations) {   // say why instead of leaving empty axes
+    PH_IDS.forEach((id) => { try { Plotly.purge(id); } catch {} });
+    const mode = ph.params?.mode || (S.runs || []).find((x) => x.name === n)?.meta?.mode;
+    const why = mode === "positron" ? "This is a positron-only shot: there are no antiproton annihilations, so the p̄ physics plots (degrader, annihilation products, angles, timing) have nothing to show. See the Ballistic transfer card above for the e⁺ arrival."
+      : mode === "g4line" ? "Positron-line run: see the Positrons page for its results."
+      : mode === "geant4" ? "No H̄ annihilation was recorded in the traced events of this run (record more events, or use a full-shot p̄ cloud)."
+      : !ph.ready ? "This run has no G4beamline secondaries file yet (still running, failed, or a non-G4beamline run)." : "No antiproton annihilated in this run.";
+    $("#ph-chips").innerHTML = `<span class="chip hl">${why}</span>`; return;
+  }
   const col = COLORS(), L = (x) => layout(x), ax = (t, extra = {}) => ({ ...layout().xaxis, title: t, ...extra }), ay = (t, extra = {}) => ({ ...layout().yaxis, title: t, ...extra });
   const mul = Object.entries(ph.mult);
-  $("#ph-chips").innerHTML = [`${ph.n_annihilations} annihilations / ${ph.n_primaries} p̄`, ...mul.map(([k, v]) => `⟨${k}⟩ = ${(+v).toFixed(2)}`),
+  $("#ph-chips").innerHTML = [ph.engine === "geant4" ? `${ph.n_annihilations} H̄ annihilations in the recorded events (Geant4: p̄ + e⁺ at rest)` : `${ph.n_annihilations} annihilations / ${ph.n_primaries} p̄`, ...mul.map(([k, v]) => `⟨${k}⟩ = ${(+v).toFixed(2)}`),
     `⟨π±⟩ = ${((ph.mult["π⁺"] || 0) + (ph.mult["π⁻"] || 0)).toFixed(2)} per annihilation`].map((t, i) => `<span class="chip ${i ? "" : "hl"}">${t}</span>`).join("");
   // 1. fate sunburst
   const ids = ["p̄"], labels = [`p̄ (${ph.n_primaries})`], parents = [""], vals = [ph.n_primaries];
@@ -749,11 +841,14 @@ async function renderPhysics(n) {
     { xaxis: ax("annihilation time after start [ns]", { range: [lo - pad, hi + pad] }), yaxis: ay("annihilations"), hovermode: "closest", showlegend: false });
   // 7. degrader
   const dg = ph.degrader;
+  const note = (id, txt) => plot(id, [], { xaxis: { visible: false }, yaxis: { visible: false }, annotations: [{ x: 0.5, y: 0.5, xref: "paper", yref: "paper", text: txt, showarrow: false, font: { size: 13, color: css("--muted") } }], margin: { l: 10, r: 10, t: 10, b: 10 } });
+  if (!dg.ke) note("ph-deg", ph.engine === "geant4" ? "No degrader in a Geant4 H̄ run (the p̄ come from the stored cloud)" : "No degrader detector in this run");
   if (dg.ke) plot("ph-deg", [{ x: dg.ke.x, y: dg.ke.y, type: "bar", marker: { color: css("--red") }, hovertemplate: "%{x:.2f} keV: %{y}<extra></extra>" }],
     { xaxis: ax(dg.where === "exit" ? "p̄ kinetic energy leaving the degrader [keV]" : "p̄ kinetic energy entering the degrader [keV] (run predates the exit detector)"), yaxis: ay("p̄", { type: "log" }), hovermode: "closest", bargap: 0.02,
       annotations: [{ x: 0.02, y: 0.95, xref: "paper", yref: "paper", xanchor: "left", text: dg.where === "exit" ? `median ${dg.median.toFixed(1)} keV · ${(100 * dg.frac10).toFixed(0)}% below 10 keV · ${dg.n} transmitted` : `${dg.mean.toFixed(2)} ± ${dg.sigma.toFixed(2)} keV`, showarrow: false, font: { size: 13, color: css("--text") } }] });
   // 8. scintillator time-of-flight map + coincidences + Edep
   const sc = ph.scint;
+  if (!(sc && sc.t)) ["ph-tof", "ph-coinc", "ph-edep"].forEach((id) => note(id, ph.engine === "geant4" ? "Scintillator hits of Geant4 runs: see the Scintillator events card above" : "No scintillator hits in this run"));
   if (sc && sc.t) {
     const kinds = [...new Set(sc.pdg)];
     plot("ph-tof", kinds.map((k, i) => { const m = sc.pdg.map((p_, j) => (p_ === k ? j : -1)).filter((j) => j >= 0);
@@ -831,14 +926,15 @@ $("#btn-rebuild").addEventListener("click", async () => {
 
 /* ---------------- event display ---------------- */
 const fmtTime = (t) => (t < 10 ? t.toFixed(2) + " ns" : t < 1e3 ? t.toFixed(1) + " ns" : t < 1e6 ? (t / 1e3).toFixed(2) + " µs" : (t / 1e6).toFixed(2) + " ms");
-const D = { viewer: null, geo: null, run: null, data: null, events: [], annEvents: [] };
+const D = { viewer: null, geo: null, run: null, data: null, events: [], annEvents: [] }; window.__twinD = D;   // debug handle
 const viewerReady = new Promise((res) => (window.TwinViewer ? res() : addEventListener("viewer-ready", res, { once: true })));
 async function initDisplay() {
   await viewerReady;
   if (!D.viewer) {
     const { EventDisplay, SPECIES } = window.TwinViewer;
     D.viewer = new EventDisplay($("#viewport"), {
-      onTime: (u, t) => { if (D.viewer?.story.on) return; $("#d-time").value = Math.round(u * 1000); $("#d-time").style.setProperty("--p", u * 100 + "%"); $("#d-tread").textContent = "t = " + fmtTime(t); },
+      onTime: (u, t, pre) => { if (D.viewer?.story.on) return; $("#d-time").value = Math.round(u * 1000); $("#d-time").style.setProperty("--p", u * 100 + "%");
+        $("#d-tread").textContent = pre != null ? (pre < 0.6 ? `e⁺ line (Geant4): ²²Na → trap ${Math.round(pre / 0.6 * 100)} %` : `e⁺ bunch: accumulator → 5 T line ${Math.round((pre - 0.6) / 0.4 * 100)} %`) : "t = " + fmtTime(t); },
       onStory: storyHUD,
       onPlay: (on) => { $("#d-play").classList.toggle("on", on); $("#d-play").innerHTML = on ? '<svg viewBox="0 0 24 24"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>' : '<svg viewBox="0 0 24 24"><path d="M7 4v16l13-8z"/></svg>'; },
       onPick: showPick,
@@ -859,6 +955,7 @@ async function initDisplay() {
     $("#d-chapters").insertAdjacentHTML("beforeend", `<button class="explain${EX.on ? " on" : ""}" id="d-explain" title="Pause at each chapter with a short explanation">ⓘ Explain</button>`);
     $("#d-explain").addEventListener("click", () => { EX.on = !EX.on; store.set("explain", EX.on); $("#d-explain").classList.toggle("on", EX.on); if (!EX.on) $("#d-explainer").hidden = true; else EX.shown = -1; });
     $("#d-hands").addEventListener("click", () => (HC.ctl ? handsOff() : handsOn()));
+    $("#d-grav").addEventListener("click", () => gravOpen($("#d-gravpanel").hidden)); $("#gv-x").addEventListener("click", () => gravOpen(false)); $("#gv-run").addEventListener("click", gravRun);
     $("#hp-x").addEventListener("click", handsOff);
     $("#d-sound").classList.toggle("on", SND.on);
     $("#d-sound").addEventListener("click", () => { SND.on = !SND.on; store.set("sound", SND.on); $("#d-sound").classList.toggle("on", SND.on); if (SND.on) { sndInit(); sndNote(440, 0.25, 0, "triangle", 1.2); } });
@@ -950,13 +1047,24 @@ const CAPTIONS = [
       closed ? `${p.id} closed at ${p.t0} ns: p̄ caught between the electrodes` : "p̄ through the degrader, into the catching trap";
     return ["Chapter 4 · Transport", title,
       `t = ${fmtTime(x.t)} · ${D.viewer.event >= 0 ? "event " + D.viewer.event : "all traced events"}${p ? ` · ${p.id} ${released ? "open (dump)" : closed ? "closed" : "open"}` : ""}${D.data?.trapped?.n ? ` · ${D.data.trapped.n} trapped` : ""}`]; },
+  () => { const hm = D.viewer.hbarModel, f = hm?.form, t = hm?.tNs ?? -1, L = D.geo?.hbar?.lasers;
+    const c = hm?.chain, sci = (v) => { const e = Math.floor(Math.log10(v)); return `${(v / 10 ** e).toFixed(1)}×10${String(e).replace(/\d/g, (d) => "⁰¹²³⁴⁵⁶⁷⁸⁹"[d])}`; };
+    if (hm?.stage === "decay") return ["Chapter 5 · Positronium", "²²Na decays: positrons in every direction", c ? `${(c.activity / 1e6).toFixed(0)} MBq · β⁺ in 89.9 % of decays, up to 547 keV (mean 216 keV) · ${sci(c.beta)} e⁺ per second` : ""];
+    if (hm?.stage === "stack") return ["Chapter 5 · Positronium", "Solid neon slows them; the traps collect them", c ? `~0.25 % leave the 7 K neon moderator at ~1 eV: ${sci(c.slow)} e⁺/s · N₂ (8.8 eV) captures, SF₆ cools · accumulator: ${sci(c.stacked)} e⁺ after ${c.t} s (time-lapse ${Math.round((hm.stackFrac || 0) * 100)} %)` : ""];
+    const title = t < 0 ? "One 2.5 keV bunch flies to the converter" : t < (L?.delay_ns ?? 25) ? "Positrons make positronium in the silica" : t < 60 ? "Lasers excite positronium to Rydberg states" : "Rydberg positronium flies into the antiproton cloud";
+    return ["Chapter 5 · Positronium", title, t < 0 ? "35 ns, ~2 mm at the target · through the transfer line (0.1 T guide coils), the 5 T and 1 T traps · no degrader foil on this path"
+      : f ? `≈${(f.psPerCycle / 1e5).toFixed(1)}×10⁵ Ps per shot · ${(f.rydPerCycle / 1e3).toFixed(1)}×10³ in n=${f.nPs} · ${(f.crossPerCycle / 1e3).toFixed(1)}×10³ cross the p̄ cloud · green: Ps, blue: Rydberg Ps (one in ~${Math.round(f.psPerCycle / Math.max(1, f.ps.length))} shown)` : ""]; },
+  () => { const hm = D.viewer.hbarModel, f = hm?.form, m = hm?.moire, tf = hm?.tFlight ?? -1;
+    const title = tf < 0 ? "Charge exchange: Ps* + p̄ → H̄* + e⁻" : !hm.hits.visible ? "Neutral antihydrogen leaves the trap" : "Fringes on the detector: gravity shifts them";
+    return ["Chapter 6 · Antihydrogen", title, f && m ? `≈${f.hbarPerCycle.toFixed(2)} H̄ per shot in this model (measured 0.05–0.13) · n_H̄ ≈ ${Math.round(Math.SQRT2 * f.nPs)} · v = ${m.v} m/s · falls ${(m.fallTotal * 1e6).toFixed(1)} µm on the way · only ~1 in ${Math.round(1 / m.fAcc).toLocaleString()} reaches the detector (shown together)` : ""]; },
 ];
 function storyHUD(u, i, p, x) {
   $("#d-time").value = Math.round(u * 1000); $("#d-time").style.setProperty("--p", u * 100 + "%");
   const [k, t, sub] = CAPTIONS[i](x);
   if ($("#d-cap-t").textContent !== t) { const c = $("#d-caption"); c.style.animation = "none"; c.offsetHeight; c.style.animation = ""; }
   $("#d-cap-k").textContent = k; $("#d-cap-t").textContent = t; $("#d-cap-s").textContent = sub;
-  $("#d-tread").textContent = i === 3 ? "t = " + fmtTime(x.t) : `${i + 1} / 4`;
+  const hm = D.viewer?.hbarModel;
+  $("#d-tread").textContent = i === 3 ? "t = " + fmtTime(x.t) : i === 4 && hm?.tNs >= 0 ? `t = ${hm.tNs.toFixed(0)} ns` : i === 5 && hm?.tFlight >= 0 ? `t = ${(hm.tFlight * 1e3).toFixed(2)} ms` : `${i + 1} / ${window.TwinViewer.STORY.length}`;
   $$("#d-chapters [data-ch]").forEach((b, j) => { b.classList.toggle("on", j === i); b.classList.toggle("done", j < i); $(".bar", b).style.width = j === i ? p * 100 + "%" : ""; });
   explainStep(u, i);
 }
@@ -1017,7 +1125,7 @@ function sndInit() {
   for (let ch = 0; ch < 2; ch++) { const d = ir.getChannelData(ch); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3.2); }
   rev.buffer = ir; const wet = C.createGain(); wet.gain.value = 0.32;
   master.connect(comp); master.connect(rev); rev.connect(wet); wet.connect(comp); comp.connect(C.destination);
-  Object.assign(SND, { ctx: C, master });
+  Object.assign(SND, { ctx: C, master, out: comp });
 }
 function sndNote(freq, gain, pan, type, dur) {
   const C = SND.ctx; if (!C) return; const t = C.currentTime;
@@ -1052,6 +1160,71 @@ function soundHits(hits, anns) {
   });
   const b = $("#d-sound"); b.classList.remove("ping"); void b.offsetWidth; b.classList.add("ping");
 }
+
+/* ---------------- positron source -> bunch ---------------- */
+async function posInit() {
+  const runs = (S.runs || (await refreshRuns()) || []).filter((r) => r.meta?.mode === "source" && r.status === "done");
+  const sel = $("#ps-runsel"), cur = sel.value;
+  sel.innerHTML = runs.length ? runs.map((r) => `<option value="${r.name}">${r.name} · ${r.meta?.nEvents} β⁺ · Ne ${r.meta?.neUm} µm</option>`).join("") : `<option value="">no source runs yet: run one</option>`;
+  if (runs.some((r) => r.name === cur)) sel.value = cur;
+  if (sel.value && !$("#ps-chain").innerHTML) posCalc();
+  const lr = (S.runs || []).filter((r) => r.meta?.mode === "g4line"), ls = $("#pl-runsel"), lc = ls.value;
+  ls.innerHTML = lr.length ? lr.map((r) => `<option value="${r.name}">${r.name} · ${r.meta?.nEvents} β⁺ · ${r.status}</option>`).join("") : `<option value="">no Geant4 positron-line runs yet</option>`;
+  if (lr.some((r) => r.name === lc)) ls.value = lc;
+  posLine();
+}
+async function posLine() {
+  const n = $("#pl-runsel").value, card = $("#pl-card"); card.hidden = !n; if (!n) return;
+  let g; try { g = await api("/api/g4hbar/" + encodeURIComponent(n)); } catch { card.hidden = true; return; }
+  if (!g.available) { $("#pl-tiles").innerHTML = `<div class="tile"><div class="l">${n}</div><div class="v">${g.status}<small> ${g.done}/${g.total ?? "?"} β⁺</small></div></div>`; $("#pl-chain").innerHTML = ""; return; }
+  const e = (v) => (v == null ? "—" : v >= 1e4 ? v.toExponential(2).replace("e+", "×10^") : v < 1e-2 ? v.toExponential(2) : v.toPrecision(3)), pc = (v) => (v == null ? "—" : (100 * v).toFixed(1) + "<small> %</small>");
+  $("#pl-tiles").innerHTML = [["β⁺ simulated", g.events.toLocaleString()], ["Trapping efficiency", pc(g.trap_eff) + "<small> (published 15–35 %)</small>"], ["Lost to Ps in the trap", pc(g.ps_frac)],
+    ["Escaped after one pass", pc(g.escape_frac)], ["Source activity", `${(g.activity_Bq / 1e6).toFixed(0)}<small> MBq on ${g.date}</small>`]]
+    .map(([l, v]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div></div>`).join("");
+  $("#pl-chain").innerHTML = `<table class="tbl"><tr><th>stage</th><th>per β⁺</th><th>e⁺ / s</th></tr>${g.stages.map((s) => `<tr><td>${s.stage}</td><td>${e(s.per_beta)}</td><td>${e(s.rate)}</td></tr>`).join("")}</table>`;
+  const tr = g.tracks || [], G = g.geometry || {};
+  plot("pl-g4tracks", [...tr.map((t) => ({ x: t.z, y: t.r, mode: "lines", line: { width: 1, color: "rgba(191,90,242,.6)" }, hovertemplate: `event ${t.ev}<br>z %{x:.1f} mm<br>r %{y:.2f} mm<extra></extra>` })),
+    ...(g.trapped ? [{ x: g.trapped.z, y: g.trapped.x.map((x, i) => Math.hypot(x, g.trapped.y[i])), mode: "markers", marker: { color: "#30d158", size: 6 }, name: "trapped", hovertemplate: "trapped at z %{x:.0f} mm<extra></extra>" }] : [])],
+    { margin: { l: 50, r: 10, t: 6, b: 40 }, showlegend: false, xaxis: { title: "z along the line [mm] (source at 0)" }, yaxis: { title: "r [mm]" },
+      shapes: [["z_trap", "z_in1"], ["z_in1", "z12"], ["z12", "z23"], ["z23", "z3w"]].map(([a, b], i) => ({ type: "rect", x0: G[a], x1: G[b], y0: 0, y1: 1, yref: "paper", fillcolor: ["rgba(255,159,10,.15)", "rgba(100,210,255,.12)", "rgba(100,210,255,.08)", "rgba(100,210,255,.05)"][i], line: { width: 0 } })) });
+  if (g.trapped) plot("pl-g4trap", [{ type: "histogram", x: g.trapped.E_tot_eV, nbinsx: 25, marker: { color: "#30d158" } }], { margin: { l: 44, r: 10, t: 6, b: 40 }, xaxis: { title: "total energy when trapped [eV] (stage-I potential = 0)" }, yaxis: { title: "e⁺ (unweighted)" } });
+  else Plotly.purge("pl-g4trap");
+  $("#pl-note").textContent = `Weights: re-emission from the neon is forced (probability BR·exp(−d/L⁺), Russian roulette below 5 %), so the rates are weighted sums. Not modelled from first principles: the line route and fields (published analogues), the trap electrode radii, and SF₆ cooling / accumulator stacking (rate model above).`;
+}
+$("#pl-runsel").addEventListener("change", posLine);
+$("#pl-run").addEventListener("click", async () => {
+  try { const r = await api("/api/run", { name: "positron_line_" + new Date().toISOString().slice(5, 16).replace(/[-T:]/g, ""), nEvents: +$("#pl-n").value, mode: "g4line",
+      g4: { V_mod: $("#pl-vmod").value, V_in: $("#pl-vin").value, p1: $("#pl-p1").value, date: $("#ps-date").value } });
+    toast(`Started ${r.name}: refresh this page when it is done`); } catch (e) { toast(e.message); }
+});
+async function posCalc() {
+  const n = $("#ps-runsel").value; if (!n) return;
+  $("#ps-msg").textContent = "computing…";
+  const q = new URLSearchParams({ L: $("#ps-L").value, K1: $("#ps-K1").value, p1: $("#ps-p1").value, date: $("#ps-date").value });
+  let d; try { d = await api(`/api/positrons/${encodeURIComponent(n)}?${q}`); } catch (e) { $("#ps-msg").textContent = e.message; return; }
+  const a = d.source, c = d.chain, fmt = (v) => (v >= 1e4 ? v.toExponential(2).replace("e+", "×10^") : v.toFixed(0));
+  $("#ps-msg").textContent = `${d.activity_MBq.toFixed(0)} MBq on ${d.date} · moderator ${(100 * a.efficiency).toFixed(3)} %${a.reaches_target ? "" : ` (the geometry cannot reach Khatri's ${(100 * a.eff_target).toFixed(2)} % cone value with L₊ = ${a.L_plus_um} µm; re-emission capped at 1)`}`;
+  $("#ps-chain").innerHTML = `<table class="tbl"><tr><th>Stage</th><th>e⁺ / s</th><th>How</th></tr>` + c.stages.map((s) => `<tr><td>${s.stage}</td><td><b>${fmt(s.rate)}</b></td><td class="muted">${s.how}</td></tr>`).join("") +
+    `<tr><td>stacked after ${c.stack_s} s</td><td><b>${fmt(c.stacked)}</b></td><td class="muted">published ~2×10⁶ · ${fmt(c.per_transfer)} per 152 ms transfer · bunch 2.5 keV, 35 ns</td></tr></table>
+    <p class="muted small">Checks: moderated rate vs published ~5×10⁵ e⁺/s into the trap; annular emission peak r = ${a.peak_r_mm?.toFixed(1)} mm with ${(100 * a.from_cone).toFixed(0)} % from the cone (Ghosh 2020: ~2 mm, 63 %). Transport and transfer efficiencies are inferred from the published totals.</p>`;
+  const reg = Object.entries(a.counts);
+  plot("pl-ps-where", [{ type: "bar", x: reg.map(([k]) => k), y: reg.map(([, v]) => (100 * v) / a.n_beta), marker: { color: reg.map(([k]) => (k.startsWith("Ne") ? "#64d2ff" : "#8e8e93")) } }],
+    { margin: { l: 40, r: 10, t: 6, b: 90 }, yaxis: { title: "% of β⁺" } });
+  plot("pl-ps-depth", [{ type: "bar", x: a.depth_um.x, y: a.depth_um.n, marker: { color: "#64d2ff" } }], { margin: { l: 40, r: 10, t: 6, b: 36 }, xaxis: { title: "stopping depth below the Ne surface [µm]" }, yaxis: { title: "e⁺" } });
+  plot("pl-ps-r", [{ type: "bar", x: a.radial.r, y: a.radial.w, marker: { color: "#ffd60a" } }], { margin: { l: 40, r: 10, t: 6, b: 36 }, xaxis: { title: "moderated e⁺ emission radius [mm]" }, yaxis: { title: "fraction" } });
+  plot("pl-ps-trap", [{ x: c.scan.map((s) => s.K), y: c.scan.map((s) => 100 * s.eff), mode: "lines+markers", name: "trapped", line: { color: "#30d158" } },
+    { x: c.scan.map((s) => s.K), y: c.scan.map((s) => 100 * s.ps_frac), mode: "lines+markers", name: "lost to Ps", line: { color: "#ff453a" } }],
+    { margin: { l: 40, r: 10, t: 6, b: 36 }, xaxis: { title: "stage-I kinetic energy [eV]" }, yaxis: { title: "% of incoming e⁺" }, legend: { orientation: "h", y: 1.12 } });
+  plot("pl-ps-stack", [{ x: c.stack.t, y: c.stack.n, mode: "lines", line: { color: "#ff9f0a", width: 3 } },
+    { x: [c.stack_s], y: [c.published.stacked], mode: "markers", marker: { color: "#fff", size: 10, symbol: "x" }, name: "published" }],
+    { margin: { l: 60, r: 10, t: 6, b: 36 }, xaxis: { title: "stacking time [s]" }, yaxis: { title: "e⁺ in the accumulator" }, showlegend: false });
+}
+$("#ps-calc").addEventListener("click", posCalc);
+$("#ps-runsel").addEventListener("change", posCalc);
+$("#ps-run").addEventListener("click", async () => {
+  try { const r = await api("/api/run", { name: "positron_source_" + new Date().toISOString().slice(5, 16).replace(/[-T:]/g, ""), nEvents: +$("#ps-n").value, mode: "source", source: { ne_um: +$("#ps-ne").value } });
+    toast(`Started ${r.name}: refresh this page when it is done`); $("#ps-msg").textContent = `running ${r.name}…`; } catch (e) { toast(e.message); }
+});
 
 /* ---------------- webcam hand control ---------------- */
 // gestures from twin/static/hands.js drive the 3D view; the camera image never leaves the browser
@@ -1119,6 +1292,59 @@ function handEvent(ev) {
   }
 }
 
+/* ---------------- antihydrogen gravity (moiré) panel ---------------- */
+async function gravRun() {
+  const h = D.geo?.hbar; if (!h) return;
+  const { moireMC, formationMC } = await import("./hbar.js");
+  const v = +$("#gv-v").value, o = { v, T: +$("#gv-T").value, period_um: +$("#gv-d").value, g: +$("#gv-g").value, nDet: +$("#gv-n").value, res_um: +$("#gv-det").value };
+  // H̄ inherit the p̄ velocity at the formation time of a ballistic G4beamline run
+  let srcNote = "";
+  if ($("#gv-src").value) {
+    const b = await api("/api/ballistic/" + encodeURIComponent($("#gv-src").value)), f = b.formation;
+    if (f) { o.v = Math.max(50, f.vz_mean); o.svz = Math.max(f.vz_sd, 1); o.svt = Math.max(f.vt_rms, 1);
+      srcNote = `H̄ velocity from ${b.name} at ${(b.t_form / 1e3).toFixed(1)} µs: v_z = ${f.vz_mean.toFixed(0)} ± ${f.vz_sd.toFixed(0)} m/s, v⊥ rms ${f.vt_rms.toFixed(0)} m/s.${f.vz_mean < 50 ? " The p̄ are not moving toward the deflectometer at this time (set an earlier formation time for a forward boost); 50 m/s used." : ""} `; }
+  }
+  $("#gv-run").disabled = true; $("#gv-run").textContent = "Running…"; await new Promise((r) => setTimeout(r, 30));
+  // B at the p̄ cloud from the CST magnet ROM with the current coil settings (sets the motional-Stark limit)
+  const st = S.state, zc = h.hbar.cloud_z, iz = st.zB.reduce((b, z, i) => (Math.abs(z - zc) < Math.abs(st.zB[b] - zc) ? i : b), 0);
+  const Bcloud = Math.abs(st.coils.reduce((a, c) => a + (S.currents[c.id] ?? c.default) * c.bz0[iz], 0));
+  const cool = $("#gv-cool").value === "1";
+  const t0 = performance.now(), m = moireMC(h, o), f = formationMC(h, { nPs: +$("#gv-nps").value, B: Bcloud, cool });
+  D.viewer.hbarModel?.setMC(f, moireMC(h, { ...o, nDet: Math.min(400, o.nDet) }));
+  $("#gv-run").disabled = false; $("#gv-run").textContent = "Run Monte-Carlo";
+  // folded fringe pattern with the fitted first harmonic
+  const nb = m.hist.length, x = m.hist.map((_, k) => ((k + 0.5) / nb) * m.d * 1e6), A = Math.max(...m.hist) - Math.min(...m.hist);
+  const mean = m.hist.reduce((a, b) => a + b, 0) / nb, ph = (2 * Math.PI * (m.shift + m.phi0 * m.d / (2 * Math.PI))) / m.d;
+  const xf = Array.from({ length: 200 }, (_, k) => (k / 199) * m.d * 1e6), fit = xf.map((u) => mean + (A / 2) * Math.cos((2 * Math.PI * u * 1e-6) / m.d - ph));
+  plot("gv-plot", [{ type: "bar", x, y: m.hist, marker: { color: "#ffd60a", opacity: 0.75 }, name: "H̄ on detector (folded)" },
+    { x: xf, y: fit, mode: "lines", line: { color: "#64d2ff", width: 2.5 }, name: "fit" },
+    { x: [m.phi0 * m.d / (2 * Math.PI) * 1e6, m.phi0 * m.d / (2 * Math.PI) * 1e6], y: [0, Math.max(...m.hist) * 1.05], mode: "lines", line: { color: "#fff", dash: "dot", width: 1 }, name: "no-force reference" }],
+    { margin: { l: 40, r: 10, t: 6, b: 34 }, xaxis: { title: "detector y mod grating period [µm]" }, yaxis: { title: "H̄ (weighted)" }, showlegend: false, bargap: 0.05 });
+  const rate = Math.max(f.hbarPerCycle, 1e-6), cyc = m.produced / 0.1, cycGoal = m.produced / 100, yrs = (c) => (c * 110) / 3.156e7;
+  const fmtN = (n) => (n >= 1e9 ? (n / 1e9).toFixed(1) + "×10⁹" : n >= 1e6 ? (n / 1e6).toFixed(1) + "×10⁶" : n >= 1e3 ? (n / 1e3).toFixed(1) + "×10³" : n.toFixed(0));
+  const dur = (c) => { const y = yrs(c); return y >= 1 ? y.toFixed(1) + " years" : (y * 365.25).toFixed(y * 365 >= 10 ? 0 : 1) + " days"; };
+  $("#gv-out").dataset.note = srcNote;
+  $("#gv-out").innerHTML = [
+    ["Expected shift (a·T²)", `${(m.expectedShift * 1e6).toFixed(2)} <small>µm</small>`],
+    ["Measured shift", `${(m.shift * 1e6).toFixed(2)} ± ${(m.sShift * 1e6).toFixed(2)} <small>µm</small>`],
+    ["Measured acceleration", `${m.aMeas.toFixed(1)} ± ${m.sA.toFixed(1)} <small>m/s² (input ${o.g})</small>`],
+    ["Fringe visibility", `${(m.vis * 100).toFixed(0)} %`],
+    ["Detected / produced", `1 : ${fmtN(1 / m.fAcc)}`],
+    ["H̄ to produce", fmtN(m.produced)],
+    ["H̄ per shot (this model)", `${rate.toFixed(3)} <small>n=${f.nPs}, B=${f.B.toFixed(2)} T (ROM)${f.starkLost ? `, ${Math.round((100 * f.starkLost) / (f.starkLost + f.rydPerCycle))} % Stark-ionised` : ""}</small>`],
+    ...(f.cooled ? [["Ps laser cooling (x)", `${f.Tbefore.toFixed(0)} → ${f.Tafter.toFixed(0)} K <small>measured 380 → 170 K</small>`]] : []),
+    ["Time at 0.1 H̄ / shot", dur(cyc)],
+    ["Time at 100 H̄ / shot (goal)", dur(cycGoal)],
+  ].map(([l, v]) => `<div><div class="l">${l}</div><div class="v">${v}</div></div>`).join("") +
+    `<div class="wide">${Math.abs(m.aMeas - o.g) < 2 * m.sA ? "✓" : "⚠"} ${o.g === 0 ? "No force: the result should be consistent with zero." : `Uncertainty on a: ±${(Math.abs(m.sA / (o.g || 1)) * 100).toFixed(0)} % of g`} with ${m.detected.toLocaleString()} detected H̄ (${m.n.toLocaleString()} trajectories sampled, ${((performance.now() - t0) / 1000).toFixed(1)} s). Sign tells the direction: a > 0 falls down. ${srcNote}</div>`;
+}
+function gravOpen(on) {
+  $("#d-gravpanel").hidden = !on; if (!on) return;
+  const sel = $("#gv-src"), cur = sel.value, br = (S.runs || []).filter((r) => (r.meta?.mode === "ballistic" || r.meta?.mode === "fullshot") && r.status === "done");
+  sel.innerHTML = `<option value="">model (v, T above)</option>` + br.map((r) => `<option value="${r.name}">ballistic run ${r.name}</option>`).join(""); sel.value = br.some((r) => r.name === cur) ? cur : "";
+  if (!$("#gv-out").innerHTML) gravRun();
+}
+
 /* ---------------- explainer cards (story mode) ---------------- */
 const EX = { on: store.get("explain", false), shown: -1 };
 const EXPLAIN = [
@@ -1140,9 +1366,18 @@ const EXPLAIN = [
       "An antiproton that touches matter annihilates with a nucleus. On average about three charged pions fly out through the cryostat and light up the scintillators: that is how the experiment sees antimatter. Turn on ♪ to hear each hit."],
     chips: () => { const p = D.data?.pulses?.[0]; return [["Degrader", "1.5 µm Parylene"], p ? ["Pulse", `${p.id} closes at ${p.t0} ns${p.open ? ", opens at " + fmtTime(p.open) : ""}`] : ["Pulse", "static"], ["Trapped", `${D.data?.trapped?.n ?? "—"}`]]; },
     src: "this G4beamline run" },
-  { k: "What comes next", t: "Towards a beam of antihydrogen", p: [
-      "The cooled antiprotons are moved to the 1 T trap. Laser-excited (Rydberg) positronium passes by and hands over its positron, which forms antihydrogen. The antihydrogen is neutral, so it leaves the trap as a beam.",
-      "AEgIS aims to measure how that beam falls in Earth's gravity: does antimatter fall like matter?"],
+  { k: "5 · Positronium", t: "Making positronium", p: [
+      "About 2 million positrons from a ²²Na source are collected in a buffer-gas trap and an accumulator, then sent in one short bunch through both traps onto a silicon target full of tiny silica-walled channels (7–10 nm wide). About 7 % of them grab an electron and leave as positronium (Ps), an electron–positron atom moving at ~100 km/s that lives only 142 ns.",
+      "25 ns later two laser pulses (205 nm, then ~1690 nm) lift Ps to a Rydberg state, n ≈ 17. A Rydberg atom is huge, so it captures much more easily."],
+    chips: () => { const f = D.viewer?.hbarModel?.form; return f ? [["Ps per shot", `${(f.psPerCycle / 1e5).toFixed(1)}×10⁵`], ["Rydberg Ps", `${(f.rydPerCycle / 1e3).toFixed(1)}×10³`], ["Lifetime", "142 ns"]] : []; },
+    src: "Huck (2025), Volponi (2024), Amsler et al. (2021)" },
+  { k: "6 · Antihydrogen", t: "Antihydrogen and gravity", p: [
+      "When a Rydberg positronium flies through the cold antiproton cloud, it can hand over its positron: Ps* + p̄ → H̄* + e⁻. The chance grows as n⁴. The antihydrogen is neutral, so the trap no longer holds it and it flies off as a beam.",
+      "Two gratings 0.5 m apart cast a moiré shadow on a position-sensitive detector. Gravity bends every flight by a few micrometres, shifting the fringe pattern by a·T². Open ⚖ Gravity to run the measurement yourself."],
+    chips: () => { const f = D.viewer?.hbarModel?.form, m = D.viewer?.hbarModel?.moire; return f && m ? [["σ(n=" + f.nPs + ")", (f.sigma * 1e14).toFixed(1) + "×10⁻¹⁴ m²"], ["Fringe shift", (m.expectedShift * 1e6).toFixed(2) + " µm"], ["Detected / produced", "1 : " + Math.round(1 / m.fAcc).toLocaleString()]] : []; },
+    src: "Krasnický et al. (2016), Huck (2025), Aghion et al. (2014)" },
+  { k: "What comes next", t: "Does antimatter fall like matter?", p: [
+      "Today AEgIS makes about 0.1 antihydrogen per shot. The goal is 10–100, with colder antiprotons and higher Rydberg states. With a forward-boosted, slower beam and finer gratings, the moiré deflectometer can then measure the fall of antimatter directly."],
     chips: () => [], src: "AEgIS" },
 ];
 const fmtHold = (h) => (h >= 48 ? (h / 24).toFixed(1) + " days" : h.toFixed(0) + " h");
@@ -1292,6 +1527,11 @@ function showPick(p) {
       <dt>Role</dt><dd>${p.role}</dd></dl>
       <p class="muted" style="font-size:11px;margin:6px 0 0">Nesting (LHe → LN₂ shield → MLI → OVC), bores and consumption are published (Volponi 2024, Huck 2025, Dudarev 2012, Derking 2014);
       wall radii are sized so LHe lasts ~2 days and LN₂ ~3 months at that consumption (no drawing published).</p>`;
+  } else if (p.type === "hbar") {
+    const h = D.geo.hbar, info = p.id === "converter"
+      ? `<h4>Positronium converter</h4><dl><dt>Material</dt><dd>${h.converter.material}</dd><dt>Channels</dt><dd>${h.converter.channel_nm.join("–")} nm wide, ${h.converter.depth_um} µm deep</dd><dt>Size</dt><dd>${h.converter.size_mm.join(" × ")} mm, on A0 (z ${h.a0[0].toFixed(1)}–${h.a0[1].toFixed(1)} mm)</dd><dt>e⁺ → Ps</dt><dd>${h.converter.ps_yield * 100} % · Ps at ~${h.converter.ps_v / 1e3} km/s</dd></dl>`
+      : `<h4>${p.id}</h4><dl><dt>Period</dt><dd>${h.moire.period_um} µm, ${h.moire.open_um} µm open</dd><dt>Size</dt><dd>${h.moire.size_mm} × ${h.moire.size_mm} mm, ${h.moire.thickness_um} µm thick</dd><dt>Spacing</dt><dd>${h.moire.L_mm} mm · first grating ${(h.moire.g1_z - h.hbar.cloud_z).toFixed(0)} mm from the H̄ source</dd></dl>`;
+    html = info + `<p class="muted" style="font-size:11px;margin:6px 0 0">Huck (2025), Volponi (2024), Aghion et al. (2014)</p>`;
   } else if (p.type === "ovc") {
     html = `<h4><i style="background:#aeb4bc"></i>${p.name}</h4><dl>
       <dt>Outer radius</dt><dd>${p.ro} mm (wall ${p.wall} mm)</dd><dt>z (CST)</dt><dd>${p.z0} … ${p.z1} mm</dd>
@@ -1315,14 +1555,23 @@ function gifOpts() {
   const mode = v("#g-mode"), w = +v("#g-w"), fps = +v("#g-fps"), len = +v("#g-len");
   const { STORY } = window.TwinViewer;
   const secs = (mode === "story" ? STORY.reduce((a, c) => a + c.dur, 0) : 9) * len;
-  return { mode, w, fps, secs, frames: Math.max(2, Math.round(secs * fps)), labels: $("#g-labels").checked, caps: $("#g-caps").checked };
+  const fmt = v("#g-fmt");
+  return { mode, w, fps: fmt === "mp4" ? Math.max(fps, 30) : fps, secs, frames: Math.max(2, Math.round(secs * (fmt === "mp4" ? Math.max(fps, 30) : fps))), labels: $("#g-labels").checked, caps: $("#g-caps").checked,
+    fmt, sound: $("#g-snd").checked };
+}
+function mp4Mime() {
+  const c = ["video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/mp4;codecs=avc1,mp4a", "video/mp4", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
+  return window.MediaRecorder ? c.find((m) => MediaRecorder.isTypeSupported(m)) : null;
 }
 function gifEstimate() {
   const o = gifOpts(), vp = $("#viewport"), h = Math.round((o.w * vp.clientHeight) / vp.clientWidth / 2) * 2;
-  const mb = (o.frames * o.w * h * 0.18) / 1e6;
-  $("#g-est").textContent = `${o.frames} frames · ${o.w}×${h} · ${o.secs.toFixed(1)} s · ≈ ${mb < 1 ? (mb * 1000).toFixed(0) + " kB" : mb.toFixed(0) + " MB"}`;
+  const mb = o.fmt === "mp4" ? (o.secs * 6) / 8 : (o.frames * o.w * h * 0.18) / 1e6;
+  $("#g-sndrow").hidden = o.fmt !== "mp4"; $("#g-fps").closest(".gs-row").hidden = o.fmt === "mp4";
+  const mm = o.fmt === "mp4" ? mp4Mime() : null;
+  $("#g-est").textContent = `${o.frames} frames · ${o.w}×${h} · ${o.secs.toFixed(1)} s · ≈ ${mb < 1 ? (mb * 1000).toFixed(0) + " kB" : mb.toFixed(0) + " MB"}`
+    + (o.fmt === "mp4" ? (mm ? ` · records in real time (${o.secs.toFixed(0)} s)${mm.startsWith("video/webm") ? " · this browser can only write WebM" : ""}` : " · this browser cannot record video") : "");
 }
-["#g-mode", "#g-w", "#g-fps", "#g-len"].forEach((id) => seg(id, gifEstimate));
+["#g-fmt", "#g-mode", "#g-w", "#g-fps", "#g-len"].forEach((id) => seg(id, gifEstimate));
 ["#g-labels", "#g-caps"].forEach((id) => $(id).addEventListener("change", gifEstimate));
 $("#d-gif").addEventListener("click", () => { if (!D.data?.available) return toast("Load a run with trajectories first"); $("#d-gifsheet").hidden = false; $("#g-prog").hidden = true; $("#g-go").disabled = false; gifEstimate(); });
 $("#g-cancel").addEventListener("click", () => { if (G.busy) G.stop = true; else $("#d-gifsheet").hidden = true; });
@@ -1355,6 +1604,30 @@ function composeFrame(ctx, gl, labels, o, W, H) {
   ctx.font = `700 ${Math.round(18 * f)}px Inter, sans-serif`; ctx.fillStyle = "#fff"; ctx.fillText(t, W / 2, by + 25 * f);
   ctx.font = `500 ${Math.round(12 * f)}px Inter, sans-serif`; ctx.fillStyle = "rgba(235,235,245,.75)"; ctx.fillText(sub, W / 2, by + 50 * f);
 }
+async function recordMp4(o, v, canvas, ctx, W, H, bar, stat) {
+  const mime = mp4Mime(); if (!mime) throw new Error("this browser cannot record video (no MediaRecorder)");
+  const vtrack = canvas.captureStream(0).getVideoTracks()[0], stream = new MediaStream([vtrack]);
+  const sndWas = SND.on; let dest = null;
+  if (o.sound) { sndInit(); await Promise.race([SND.ctx.resume(), new Promise((r) => setTimeout(r, 800))]); SND.on = true; dest = SND.ctx.createMediaStreamDestination(); SND.out.connect(dest); dest.stream.getAudioTracks().forEach((t) => stream.addTrack(t)); }
+  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6e6, audioBitsPerSecond: 160e3 }), chunks = [];
+  rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  const done = new Promise((r) => (rec.onstop = r));
+  rec.start(500);
+  try {
+    // the recorder is paused while a frame renders and runs for one frame slot after it, so the video has the right
+    // length even when the machine renders slower than real time
+    await v.record({ mode: o.mode, frames: o.frames, shouldStop: () => G.stop, realtimeFps: o.fps,
+      onBeforeFrame: () => { if (rec.state === "recording") rec.pause(); },
+      onFrame: (gl, labels) => { composeFrame(ctx, gl, labels, o, W, H); vtrack.requestFrame?.(); if (rec.state === "paused") rec.resume(); },
+      onProgress: (k, n) => { bar.style.width = (100 * k) / n + "%"; stat.textContent = `Recording ${(k / o.fps).toFixed(1)} / ${o.secs.toFixed(1)} s`; } });
+    await new Promise((r) => setTimeout(r, 400));          // let the last notes ring out
+  } finally {
+    rec.stop(); await done; vtrack.stop();
+    if (dest) { try { SND.out.disconnect(dest); } catch {} } SND.on = sndWas;
+  }
+  if (G.stop) throw new Error("cancelled");
+  return { blob: new Blob(chunks, { type: mime.split(";")[0] }), ext: mime.startsWith("video/mp4") ? "mp4" : "webm" };
+}
 $("#g-go").addEventListener("click", async () => {
   if (G.busy) return;
   const o = gifOpts(), v = D.viewer, vp = $("#viewport");
@@ -1366,6 +1639,17 @@ $("#g-go").addEventListener("click", async () => {
   if (o.mode === "story" && !wasStory) setStoryMode(true);
   if (o.mode === "story") v.storyPlay(false);
   if (o.mode === "tracks" && wasStory) setStoryMode(false);
+  if (o.fmt === "mp4") {
+    const bar = $("#g-bar"), stat = $("#g-stat");
+    try {
+      const { blob, ext } = await recordMp4(o, v, canvas, ctx, W, H, bar, stat);
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `aegis_${D.run}_${v.event >= 0 ? "ev" + v.event : "all"}_${o.mode}.${ext}`; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      stat.textContent = `Saved ${a.download} · ${(blob.size / 1e6).toFixed(1)} MB`; toast(ext === "mp4" ? "MP4 saved" : "Saved as WebM (this browser has no MP4 recorder)");
+    } catch (e) { stat.textContent = e.message === "cancelled" ? "Cancelled" : "Failed: " + e.message; }
+    finally { G.busy = false; $("#g-go").disabled = false; $("#g-cancel").textContent = "Close"; }
+    return;
+  }
   const gif = new GIF({ workers: Math.min(4, navigator.hardwareConcurrency || 2), quality: 10, width: W, height: H, workerScript: "vendor/gif.worker.js", dither: false });
   const bar = $("#g-bar"), stat = $("#g-stat");
   try {
