@@ -397,7 +397,8 @@ export class EventDisplay {
     this.pulses = data.pulses || [];
     try { this.hbarModel?.setLineTracks(data.eline); } catch (err) { console.error(err); }
     const prim = this.trackInfo.filter((t) => t.pdg === -2212 && t.par === 0);
-    if (prim.length) this.zDel = prim.reduce((a, t) => a + t.start[2], 0) / prim.length;
+    // the transfer line ends at LNE02$END (z = -1073 mm, outside the 5 T cryostat); runs launched from inside the trap must not drag it into the cryostat
+    if (prim.length) this.zDel = Math.min(-1073, prim.reduce((a, t) => a + t.start[2], 0) / prim.length);
     this.bunchInit = prim.map((t, i) => ({ x: t.start[0], y: t.start[1], ev: t.ev, dz: 260 * Math.sin(i * 12.9898) * Math.cos(i * 4.1414), ph: (i * 0.618) % 1 }));
     this.buildTransferLine(); this.buildBunch();
     this.updateTimeIndex();
